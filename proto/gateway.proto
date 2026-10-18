@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package ration.gateway.v1;
+
+import "common.proto";
+
+option go_package = "github.com/caelum0x/ration/pkg/pb/gateway";
+
+// Gateway is the Go service that owns the Airwallex integration
+// (Issuing API, Global Accounts, webhooks) and fronts LedgerCore for
+// the TUI, CLI and Agent. It never stores money state itself — every
+// balance-affecting call is proxied to LedgerCore so there is one
+// source of truth.
+service Gateway {
+  rpc IssueCard(IssueCardRequest) returns (Card);
+  rpc AdjustCardLimit(AdjustCardLimitRequest) returns (Card);
+  rpc GetCard(GetCardRequest) returns (Card);
+  rpc ListCards(ListCardsRequest) returns (ListCardsResponse);
+
+  rpc RationBridgeFunding(RationBridgeFundingRequest) returns (RationBridgeFundingResponse);
+
+  rpc SimulateDeposit(SimulateDepositRequest) returns (SimulateDepositResponse);
+
+  rpc StreamActivity(StreamActivityRequest) returns (stream ActivityEvent);
+}
+
+message Card {
+  string id = 1;
+  string tenant_id = 2;
+  string airwallex_card_id = 3;
+  string cardholder_name = 4;
+  ration.common.v1.CardStatus status = 5;
+  int64 limit_minor_units = 6;
+  string limit_interval = 7; // "daily" | "monthly"
+  string currency = 8;
+  int64 created_at_unix = 9;
+}
+
+message IssueCardRequest {
+  string tenant_id = 1;
+  string cardholder_name = 2;
+  int64 limit_minor_units = 3;
+  string limit_interval = 4;
+  string currency = 5;
+}
+
+message AdjustCardLimitRequest {
+  string card_id = 1;
+  int64 new_limit_minor_units = 2;
+  string reason = 3;
+}
+
+message GetCardRequest {
+  string card_id = 1;
+}
+
+message ListCardsRequest {
+  string tenant_id = 1;
+}
+
+message ListCardsResponse {
+  repeated Card cards = 1;
+}
+
+message RationBridgeFundingRequest {
+  string tenant_id = 1;
+  int64 requested_minor_units = 2;
+  string reason = 3;
+}
+
+message RationBridgeFundingResponse {
+  int64 granted_minor_units = 1;
+  bool fully_granted = 2;
+  string explanation = 3;
+}
+
+message SimulateDepositRequest {
+  string tenant_id = 1;
+  int64 amount_minor_units = 2;
+  int64 expected_at_unix = 3;
+  bool mark_late = 4; // if true, created already past expected_at_unix
+}
+
+message SimulateDepositResponse {
+  string deposit_id = 1;
+}
+
+message StreamActivityRequest {
+  string tenant_id = 1; // empty = all tenants
+}
+
+message ActivityEvent {
+  string id = 1;
+  string tenant_id = 2;
+  string kind = 3; // "deposit", "card", "agent_decision", "ledger_entry"
+  string summary = 4;
+  int64 at_unix = 5;
+}

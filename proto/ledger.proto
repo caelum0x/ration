@@ -1,0 +1,183 @@
+syntax = "proto3";
+
+package ration.ledger.v1;
+
+import "common.proto";
+
+option go_package = "github.com/caelum0x/ration/pkg/pb/ledger";
+
+// LedgerCore is the authoritative source of truth for tenant balances,
+// deposits, reserve floors and double-entry ledger history. Implemented
+// in Rust, backed by a C write-ahead log (services/wal) for crash-safe
+// durability. All money-moving decisions must go through this service —
+// no other service is allowed to mutate balances directly.
+service LedgerCore {
+  rpc CreateTenant(CreateTenantRequest) returns (Tenant);
+  rpc GetTenant(GetTenantRequest) returns (Tenant);
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+
+  rpc RecordDeposit(RecordDepositRequest) returns (Deposit);
+  rpc MarkDepositReceived(MarkDepositReceivedRequest) returns (Deposit);
+  rpc ListDeposits(ListDepositsRequest) returns (ListDepositsResponse);
+  rpc ListLateDeposits(ListLateDepositsRequest) returns (ListDepositsResponse);
+
+  // ApplyEntry is the only way money moves. It is idempotent on
+  // idempotency_key and enforces the tenant's reserve floor for
+  // DEBIT and HOLD entries before committing to the WAL.
+  rpc ApplyEntry(ApplyEntryRequest) returns (ApplyEntryResponse);
+  rpc GetBalance(GetBalanceRequest) returns (Balance);
+  rpc ListEntries(ListEntriesRequest) returns (ListEntriesResponse);
+
+  rpc CheckReserveFloor(CheckReserveFloorRequest) returns (CheckReserveFloorResponse);
+
+  rpc RecordAgentDecision(RecordAgentDecisionRequest) returns (AgentDecision);
+  rpc ListAgentDecisions(ListAgentDecisionsRequest) returns (ListAgentDecisionsResponse);
+}
+
+message Tenant {
+  string id = 1;
+  string name = 2;
+  string currency = 3;
+  int64 reserve_floor_minor_units = 4;
+  int64 created_at_unix = 5;
+}
+
+message CreateTenantRequest {
+  string name = 1;
+  string currency = 2;
+  int64 reserve_floor_minor_units = 3;
+}
+
+message GetTenantRequest {
+  string id = 1;
+}
+
+message ListTenantsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListTenantsResponse {
+  repeated Tenant tenants = 1;
+  string next_page_token = 2;
+}
+
+message Deposit {
+  string id = 1;
+  string tenant_id = 2;
+  ration.common.v1.Money expected_amount = 3;
+  int64 expected_at_unix = 4;
+  int64 received_at_unix = 5; // 0 if not yet received
+  ration.common.v1.DepositStatus status = 6;
+  string external_ref = 7; // Airwallex global account transaction id
+}
+
+message RecordDepositRequest {
+  string tenant_id = 1;
+  ration.common.v1.Money expected_amount = 2;
+  int64 expected_at_unix = 3;
+  string external_ref = 4;
+}
+
+message MarkDepositReceivedRequest {
+  string deposit_id = 1;
+  int64 received_at_unix = 2;
+  string external_ref = 3;
+}
+
+message ListDepositsRequest {
+  string tenant_id = 1;
+}
+
+message ListLateDepositsRequest {
+  int64 as_of_unix = 1;
+}
+
+message ListDepositsResponse {
+  repeated Deposit deposits = 1;
+}
+
+message ApplyEntryRequest {
+  string tenant_id = 1;
+  ration.common.v1.LedgerEntryType type = 2;
+  ration.common.v1.Money amount = 3;
+  string reference = 4;
+  string idempotency_key = 5;
+  string memo = 6;
+}
+
+message ApplyEntryResponse {
+  LedgerEntry entry = 1;
+  Balance balance_after = 2;
+  bool reserve_floor_violated = 3;
+}
+
+message LedgerEntry {
+  string id = 1;
+  string tenant_id = 2;
+  ration.common.v1.LedgerEntryType type = 3;
+  ration.common.v1.Money amount = 4;
+  int64 balance_after_minor_units = 5;
+  string reference = 6;
+  string memo = 7;
+  int64 created_at_unix = 8;
+}
+
+message GetBalanceRequest {
+  string tenant_id = 1;
+}
+
+message Balance {
+  string tenant_id = 1;
+  int64 available_minor_units = 2;
+  int64 held_minor_units = 3;
+  string currency = 4;
+}
+
+message ListEntriesRequest {
+  string tenant_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListEntriesResponse {
+  repeated LedgerEntry entries = 1;
+  string next_page_token = 2;
+}
+
+message CheckReserveFloorRequest {
+  string tenant_id = 1;
+  int64 proposed_debit_minor_units = 2;
+}
+
+message CheckReserveFloorResponse {
+  bool allowed = 1;
+  int64 headroom_minor_units = 2;
+}
+
+message AgentDecision {
+  string id = 1;
+  string tenant_id = 2;
+  string trigger = 3; // e.g. "deposit_late", "card_request", "risk_review"
+  ration.common.v1.AgentAction action = 4;
+  string rationale = 5;
+  string policy_snapshot_json = 6;
+  int64 created_at_unix = 7;
+}
+
+message RecordAgentDecisionRequest {
+  string tenant_id = 1;
+  string trigger = 2;
+  ration.common.v1.AgentAction action = 3;
+  string rationale = 4;
+  string policy_snapshot_json = 5;
+}
+
+message ListAgentDecisionsRequest {
+  string tenant_id = 1;
+  int32 limit = 2;
+}
+
+message ListAgentDecisionsResponse {
+  repeated AgentDecision decisions = 1;
+}

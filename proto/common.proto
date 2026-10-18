@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package ration.common.v1;
+
+option go_package = "github.com/caelum0x/ration/pkg/pb/common";
+
+// Money is always fixed-point minor units (e.g. cents) to avoid float drift.
+message Money {
+  int64 minor_units = 1;
+  string currency = 2; // ISO 4217, e.g. "USD"
+}
+
+enum LedgerEntryType {
+  LEDGER_ENTRY_TYPE_UNSPECIFIED = 0;
+  LEDGER_ENTRY_TYPE_CREDIT = 1;
+  LEDGER_ENTRY_TYPE_DEBIT = 2;
+  LEDGER_ENTRY_TYPE_HOLD = 3;
+  LEDGER_ENTRY_TYPE_RELEASE = 4;
+}
+
+enum DepositStatus {
+  DEPOSIT_STATUS_UNSPECIFIED = 0;
+  DEPOSIT_STATUS_EXPECTED = 1;
+  DEPOSIT_STATUS_RECEIVED = 2;
+  DEPOSIT_STATUS_LATE = 3;
+}
+
+enum CardStatus {
+  CARD_STATUS_UNSPECIFIED = 0;
+  CARD_STATUS_ACTIVE = 1;
+  CARD_STATUS_RATIONED = 2; // spend capped below requested due to bridge funding
+  CARD_STATUS_SUSPENDED = 3;
+  CARD_STATUS_CLOSED = 4;
+}
+
+enum AgentAction {
+  AGENT_ACTION_UNSPECIFIED = 0;
+  AGENT_ACTION_ISSUE_CARD = 1;
+  AGENT_ACTION_ADJUST_LIMIT = 2;
+  AGENT_ACTION_RATION_BRIDGE = 3;
+  AGENT_ACTION_RELEASE_HOLD = 4;
+  AGENT_ACTION_DECLINE = 5;
+  AGENT_ACTION_NOTIFY = 6;
+}

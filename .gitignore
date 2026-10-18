@@ -1,0 +1,20 @@
+bin/
+data/
+*.log
+.env
+.DS_Store
+
+# Rust
+services/ledger-core/target/
+
+# C
+services/wal/*.o
+services/wal/*.a
+services/wal/test_wal
+services/wal/bench_wal
+
+# Go
+pkg/pb/*.pb.go
+
+# proto codegen tool cache
+**/.protoc-cache/
