@@ -1,0 +1,23 @@
+[package]
+name = "ration-client"
+version = "0.1.0"
+edition = "2021"
+description = "Typed Rust client for Ration's gateway.proto Gateway service (docs/SCALE-EXPANSION.md section 7)."
+
+[lib]
+name = "ration_client"
+path = "src/lib.rs"
+
+[dependencies]
+tonic = "0.12"
+prost = "0.13"
+thiserror = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tower = "0.4"
+hyper-util = { version = "0.1", features = ["tokio"] }
+
+[build-dependencies]
+tonic-build = "0.12"
