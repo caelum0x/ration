@@ -9,6 +9,7 @@ use (
 	./services/cli
 	./services/gateway
 	./services/tenant-registry
+	./sdk/go/ration
 	./services/tui
 	./services/webhook-ingestion
 )
