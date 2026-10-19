@@ -26,6 +26,20 @@ type Config struct {
 	GatewayGRPCAddr string
 	MetricsAddr     string
 
+	// GatewayGRPCDialAddr is the address internal/httpapi's REST facade
+	// dials to reach this same process's own gRPC listener
+	// (GatewayGRPCAddr above) — separate from GatewayGRPCAddr because
+	// that is a *bind* address (e.g. "0.0.0.0:7002" in docker-compose)
+	// which is not always a valid *dial* target for the same process on
+	// every platform, whereas this is always a loopback address this
+	// process can reach itself at. Defaults to the same port
+	// GatewayGRPCAddr defaults to.
+	GatewayGRPCDialAddr string
+
+	// HTTPAddr is where internal/httpapi's REST/JSON facade
+	// (docs/SCALE-EXPANSION.md section 7, docs/adr/0003) listens.
+	HTTPAddr string
+
 	// MTLS configures mutual TLS for the gateway's own gRPC server and
 	// for dialing its backing services (see pkg/mtls, infra/dev-ca/).
 	// Disabled by default — see GATEWAY_MTLS_ENABLED in pkg/mtls's doc
@@ -53,6 +67,9 @@ func Load() (*Config, error) {
 
 		GatewayGRPCAddr: getenvDefault("GATEWAY_GRPC_ADDR", "localhost:7002"),
 		MetricsAddr:     getenvDefault("GATEWAY_METRICS_ADDR", "localhost:9091"),
+
+		GatewayGRPCDialAddr: getenvDefault("GATEWAY_GRPC_DIAL_ADDR", "localhost:7002"),
+		HTTPAddr:            getenvDefault("GATEWAY_HTTP_ADDR", "localhost:8082"),
 	}
 
 	var err error
@@ -93,6 +110,12 @@ func (c *Config) validate() error {
 	}
 	if c.GatewayGRPCAddr == "" {
 		return fmt.Errorf("config: GATEWAY_GRPC_ADDR must not be empty")
+	}
+	if c.GatewayGRPCDialAddr == "" {
+		return fmt.Errorf("config: GATEWAY_GRPC_DIAL_ADDR must not be empty")
+	}
+	if c.HTTPAddr == "" {
+		return fmt.Errorf("config: GATEWAY_HTTP_ADDR must not be empty")
 	}
 	return nil
 }

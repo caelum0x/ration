@@ -22,12 +22,12 @@ hackathon participant, not a self-serve API key. Steps:
    - `AIRWALLEX_API_KEY`
    - a sandbox base URL (normally `https://api-demo.airwallex.com`)
 4. Drop them into `.env` (copy `.env.example`) and set `AIRWALLEX_MODE=live`.
-   No code changes needed — `services/gateway/internal/airwallex` implements
+   No code changes needed — `services/card-issuance/internal/airwallex` implements
    the same interface for both mock and live clients.
 
 ## Why this doesn't block the build
 
-`services/gateway/internal/airwallex/mock.go` mirrors the real Issuing API
+`services/card-issuance/internal/airwallex/mock.go` mirrors the real Issuing API
 (`POST /issuing/cards/create`), Global Accounts (`GET
 /global_accounts/{id}/transactions`) and webhook payload shapes closely
 enough that the agent loop, ledger core, and TUI all run a full end-to-end

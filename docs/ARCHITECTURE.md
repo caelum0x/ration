@@ -62,49 +62,144 @@ Files:
   or double-applied entries) — these are the tests that actually prove the
   ledger is correct; do not skip them.
 
-## services/gateway (Go)
+## services/gateway (Go) — thin BFF
 
-Owns Airwallex. Never touches money state directly — every balance-moving
-operation proxies to ledger-core over gRPC.
+**Post section-1 split** (`docs/SCALE-EXPANSION.md` section 1,
+`docs/adr/0004`): gateway no longer owns Airwallex, tenant CRUD or the
+rationing math directly — it is a thin BFF/aggregator implementing
+`gateway.proto` by fanning out gRPC calls to the four services below.
+Its external interface (what the TUI/CLI/agent dial) is byte-for-byte
+unchanged from before the split.
 
 Files:
-- `cmd/gateway/main.go` — wiring: config, ledger-core client, airwallex
-  client (mock or live per `AIRWALLEX_MODE`), gRPC server for
+- `cmd/gateway/main.go` — wiring: config, ledger-core client (for
+  `SimulateDeposit` only), card-issuance client, webhook-ingestion
+  client (relayed into the local activity bus), gRPC server for
   `gateway.proto`.
-- `internal/config/config.go` — env loading + validation, fails fast on
-  missing required vars in live mode.
-- `internal/airwallex/client.go` — interface `type Client interface {
-  IssueCard(...); GetCard(...); SetCardControls(...);
-  ListGlobalAccountTransactions(...); VerifyWebhookSignature(...) }`.
-- `internal/airwallex/live.go` — real HTTP client: auth token exchange
-  (`POST /api/v1/authentication/login`), issuing endpoints, global account
-  endpoints, correct Airwallex header/signature handling.
-- `internal/airwallex/mock.go` — in-memory fake implementing the same
-  interface, deterministic fixtures, used when `AIRWALLEX_MODE=mock`
-  (default).
-- `internal/airwallex/webhook.go` — webhook payload types + HMAC signature
-  verification (shared by live and a `/webhooks/airwallex` HTTP handler
-  used in mock mode to simulate deposit-received events).
+- `internal/config/config.go` — env loading + validation: where to dial
+  each backing service, rate-limit tuning, mTLS. No Airwallex or
+  bridge-policy config anymore (moved to card-issuance).
+- `internal/cardissuanceclient/client.go` — typed gRPC client wrapper
+  around `cardissuance.CardIssuanceClient`.
+- `internal/webhookeventsclient/client.go` — typed gRPC client wrapper
+  that subscribes to webhook-ingestion's `StreamEvents` and republishes
+  every event onto gateway's own `internal/activity` bus.
 - `internal/ledgerclient/client.go` — typed gRPC client wrapper around
-  `ledger.LedgerCoreClient`.
-- `internal/tenant/service.go` — tenant CRUD, delegates persistence to
-  ledger-core.
-- `internal/card/service.go` — `IssueCard`, `AdjustCardLimit`:
-  airwallex.IssueCard -> ledgerclient reserve-floor check -> persist card
-  metadata -> ledger entry for any hold.
-- `internal/bridge/service.go` — `RationBridgeFunding`: the actual rationing
-  math (see AGENT-DESIGN.md policy) — computes how much of a requested
-  amount can be granted without breaching reserve floor, applies a HOLD
-  ledger entry for the granted portion.
+  `ledger.LedgerCoreClient`, used only by `SimulateDeposit` now.
 - `internal/activity/stream.go` — fan-out event bus (Go channels) feeding
-  `StreamActivity` gRPC stream to the TUI.
-- `internal/grpcserver/server.go` — `gateway.proto` service impl, wires the
-  above.
-- `internal/httpserver/webhooks.go` — plain HTTP listener for Airwallex
-  webhook delivery (signature-verified), only live in `AIRWALLEX_MODE=live`.
-- `go.mod`, `*_test.go` next to each package (table-driven tests, esp.
-  `bridge/service_test.go` covering partial-grant and reserve-floor-breach
-  cases).
+  `StreamActivity` gRPC stream to the TUI — fed both by gateway's own
+  RPC handlers (card/bridge/deposit events) and by the webhook-ingestion
+  relay above.
+- `internal/grpcserver/server.go` — `gateway.proto` service impl: each
+  method either translates to a `cardissuanceclient` call (IssueCard,
+  AdjustCardLimit, GetCard, ListCards, RationBridgeFunding), talks to
+  ledger-core directly (SimulateDeposit), or serves the local activity
+  bus (StreamActivity).
+- `internal/ratelimit/limiter.go` — per-tenant token bucket in front of
+  every RPC on this service's public gRPC surface (unchanged by the
+  split — this is gateway's surface to protect, not any backing
+  service's).
+- `go.mod`, `*_test.go` next to each package.
+
+## services/auth (Go)
+
+New capability, not an extraction (`docs/adr/0004`) — nothing in the
+pre-split gateway issued per-service mTLS certs or tenant API
+keys/JWTs. Has no ledger-core dependency.
+
+Files:
+- `cmd/auth/main.go` — wiring: JWT signing key, CA (fresh in-memory or
+  loaded from disk), gRPC server for `auth.proto`.
+- `internal/apikey/apikey.go` — tenant API-key issuance (plaintext
+  secret returned once), salted-hash verification, revocation.
+- `internal/jwtauth/jwtauth.go` — short-lived bearer-token minting and
+  verification, scoped to a tenant + subject.
+- `internal/servicecertca/ca.go` — runtime CSR signing against an
+  in-process CA, for service-to-service mTLS identity issuance.
+- `internal/grpcserver/server.go` — `auth.proto` service impl, wires the
+  above. **Not yet dialed by gateway or any other service** — see
+  `docs/THREAT-MODEL.md`'s known-gap 1.
+
+## services/tenant-registry (Go)
+
+A direct extraction of the old gateway's `internal/tenant/service.go`
+(`docs/adr/0004`) — owns no state of its own, every write proxies to
+ledger-core.
+
+Files:
+- `cmd/tenant-registry/main.go` — wiring: ledger-core client, gRPC
+  server for `tenant_registry.proto`.
+- `internal/tenant/service.go` — `CreateTenant`/`GetTenant`/`ListTenants`,
+  delegates persistence to ledger-core.
+- `internal/ledgerclient/client.go` — this service's own typed gRPC
+  client wrapper around `ledger.LedgerCoreClient` (each split service
+  gets its own copy, not a shared import — see `docs/adr/0004`).
+- `internal/grpcserver/server.go` — `tenant_registry.proto` service
+  impl.
+
+## services/card-issuance (Go) — the highest-value service
+
+A direct extraction of the old gateway's `internal/card` +
+`internal/bridge` (`docs/adr/0004`): Airwallex issuing calls and the
+rationing/bridge-funding math — where real money decisions happen.
+Stateless and idempotent per tenant (correctness rests on ledger-core's
+own idempotent, reserve-floor-checked `ApplyEntry`), so it is safe to
+run as N replicas.
+
+Files:
+- `cmd/card-issuance/main.go` — wiring: config, ledger-core client,
+  Airwallex client (mock or live per `AIRWALLEX_MODE`), gRPC server for
+  `card_issuance.proto`.
+- `internal/config/config.go` — Airwallex + bridge-policy env loading
+  (this service's share of the old gateway's `internal/config`).
+- `internal/airwallex/client.go` / `live.go` / `mock.go` — unchanged
+  from the old gateway's package of the same name, moved verbatim.
+- `internal/cardsvc/service.go` — `IssueCard`, `AdjustCardLimit`,
+  `GetCard`, `ListCards`: airwallex call -> ledgerclient reserve-floor
+  check -> persist card metadata -> ledger entry for any hold.
+- `internal/bridge/service.go` — `RationBridgeFunding`: the actual
+  rationing math (see `AGENT-DESIGN.md`'s policy) — computes how much
+  of a requested amount can be granted without breaching reserve floor,
+  applies a HOLD ledger entry for the granted portion. Carries over the
+  old gateway's `bridge/service_test.go` cases unchanged — the business
+  logic didn't change, only which deployable it lives in.
+- `internal/ledgerclient/client.go` — this service's own typed gRPC
+  client wrapper around `ledger.LedgerCoreClient`.
+- `internal/grpcserver/server.go` — `card_issuance.proto` service impl,
+  a direct passthrough to `cardsvc`/`bridge` (unlike the old gateway,
+  this package's wire types and its internal services' types are
+  identical, so there's no translation to do here — gateway's own
+  `internal/grpcserver` is where the `cardissuance.*` <-> `gateway.*`
+  translation now happens).
+
+## services/webhook-ingestion (Go)
+
+A direct extraction of the old gateway's `internal/airwallex/webhook.go`
+(signature verification) + `internal/httpserver/webhooks.go` (the HTTP
+listener) (`docs/adr/0004`) — isolates Airwallex's bursty, externally
+triggered webhook traffic from every other service's deploy cadence.
+
+Files:
+- `cmd/webhook-ingestion/main.go` — wiring: ledger-core client, webhook
+  secret, gRPC server for `webhook_ingestion.proto` **and** a plain
+  HTTP listener for `/webhooks/airwallex` (always on, independent of
+  any mock/live mode — unlike the old gateway's webhook listener, which
+  only started in `AIRWALLEX_MODE=live`).
+- `internal/airwallex/webhook.go` — webhook payload types + HMAC
+  signature verification, moved verbatim from the old gateway.
+- `internal/webhookhandler/webhooks.go` — the HTTP handler: verifies
+  signature, parses the envelope, turns
+  `global_account.transaction.created` into a `MarkDepositReceived`
+  call against ledger-core, publishes a normalized event either way.
+- `internal/eventbus/eventbus.go` — fan-out event bus (Go channels)
+  feeding `webhook_ingestion.proto`'s `StreamEvents` RPC — the
+  documented subscriber is gateway's own `internal/webhookeventsclient`,
+  merging these events into its activity feed.
+- `internal/ledgerclient/client.go` — this service's own typed gRPC
+  client wrapper around `ledger.LedgerCoreClient`.
+- `internal/grpcserver/server.go` — `webhook_ingestion.proto` service
+  impl (`StreamEvents` only — webhook ingestion itself happens over
+  plain HTTP, not gRPC).
 
 ## services/agent (Go)
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Starts the Ration demo stack: ledger-core (Rust, release binary),
-# gateway (Go, AIRWALLEX_MODE=mock), and the agent's polling loop (Go) as
-# background processes, waits for ledger-core/gateway to be accepting
-# connections on their gRPC ports, seeds demo tenants via `ration seed`,
-# and prints instructions for watching it live in `./bin/tui`.
+# Starts the Ration demo stack: ledger-core (Rust, release binary), the
+# four section-1 split services (auth, tenant-registry, card-issuance in
+# AIRWALLEX_MODE=mock, webhook-ingestion), the gateway BFF fronting them
+# (gateway.proto, unchanged externally — docs/SCALE-EXPANSION.md section
+# 1, docs/adr/0004), and the agent's polling loop (Go) as background
+# processes, waits for every gRPC-listening service to be accepting
+# connections on its port, seeds demo tenants via `ration seed`, and
+# prints instructions for watching it live in `./bin/tui`.
 #
 # Run `make build` first. Stop everything with scripts/stop-demo.sh (or
 # `kill $(cat .ration-demo.pid | awk '{print $2}')`) when you're done.
@@ -35,16 +38,35 @@ load_env_file "$ROOT/.env"
 load_env_file "$ROOT/.env.example"
 
 LEDGER_CORE_ADDR="${LEDGER_CORE_ADDR:-localhost:7001}"
+AUTH_GRPC_ADDR="${AUTH_GRPC_ADDR:-localhost:7010}"
+TENANT_REGISTRY_GRPC_ADDR="${TENANT_REGISTRY_GRPC_ADDR:-localhost:7011}"
+CARD_ISSUANCE_GRPC_ADDR="${CARD_ISSUANCE_GRPC_ADDR:-localhost:7012}"
+WEBHOOK_INGESTION_GRPC_ADDR="${WEBHOOK_INGESTION_GRPC_ADDR:-localhost:7013}"
 GATEWAY_GRPC_ADDR="${GATEWAY_GRPC_ADDR:-localhost:7002}"
+CARD_ISSUANCE_ADDR="${CARD_ISSUANCE_ADDR:-$CARD_ISSUANCE_GRPC_ADDR}"
+WEBHOOK_INGESTION_ADDR="${WEBHOOK_INGESTION_ADDR:-$WEBHOOK_INGESTION_GRPC_ADDR}"
 AIRWALLEX_MODE="mock"
-export LEDGER_CORE_ADDR GATEWAY_GRPC_ADDR AIRWALLEX_MODE
+# auth has no insecure default (docs/SCALE-EXPANSION.md section 1, see
+# services/auth/internal/config's doc comment) — the demo isn't a real
+# deployment, but AUTH_JWT_SIGNING_KEY is still a secret in shape, so
+# generate a fresh one per run rather than committing a fixed demo value
+# anyone reading this script could reuse.
+AUTH_JWT_SIGNING_KEY="${AUTH_JWT_SIGNING_KEY:-$(head -c 32 /dev/urandom | base64 | tr -d '\n')}"
+export LEDGER_CORE_ADDR AUTH_GRPC_ADDR TENANT_REGISTRY_GRPC_ADDR CARD_ISSUANCE_GRPC_ADDR \
+  WEBHOOK_INGESTION_GRPC_ADDR GATEWAY_GRPC_ADDR CARD_ISSUANCE_ADDR WEBHOOK_INGESTION_ADDR \
+  AIRWALLEX_MODE AUTH_JWT_SIGNING_KEY
 
 LEDGER_BIN="$ROOT/services/ledger-core/target/release/ledger-core"
+AUTH_BIN="$ROOT/bin/auth"
+TENANT_REGISTRY_BIN="$ROOT/bin/tenant-registry"
+CARD_ISSUANCE_BIN="$ROOT/bin/card-issuance"
+WEBHOOK_INGESTION_BIN="$ROOT/bin/webhook-ingestion"
 GATEWAY_BIN="$ROOT/bin/gateway"
 AGENT_BIN="$ROOT/bin/agent"
 RATION_BIN="$ROOT/bin/ration"
 
-for bin in "$LEDGER_BIN" "$GATEWAY_BIN" "$AGENT_BIN" "$RATION_BIN"; do
+for bin in "$LEDGER_BIN" "$AUTH_BIN" "$TENANT_REGISTRY_BIN" "$CARD_ISSUANCE_BIN" \
+  "$WEBHOOK_INGESTION_BIN" "$GATEWAY_BIN" "$AGENT_BIN" "$RATION_BIN"; do
   if [ ! -x "$bin" ]; then
     echo "run-demo: missing binary $bin — run 'make build' first." >&2
     exit 1
@@ -94,14 +116,34 @@ wait_for_port() {
 }
 
 echo "Ration demo — starting services (AIRWALLEX_MODE=$AIRWALLEX_MODE)"
-echo "  ledger-core -> $LEDGER_CORE_ADDR"
-echo "  gateway     -> $GATEWAY_GRPC_ADDR"
+echo "  ledger-core       -> $LEDGER_CORE_ADDR"
+echo "  auth              -> $AUTH_GRPC_ADDR"
+echo "  tenant-registry   -> $TENANT_REGISTRY_GRPC_ADDR"
+echo "  card-issuance     -> $CARD_ISSUANCE_GRPC_ADDR"
+echo "  webhook-ingestion -> $WEBHOOK_INGESTION_GRPC_ADDR"
+echo "  gateway           -> $GATEWAY_GRPC_ADDR"
 echo
 
 trap cleanup_on_failure ERR
 
 start_bg "ledger-core" "$LOG_DIR/ledger-core.log" "$LEDGER_BIN"
 wait_for_port "$LEDGER_CORE_ADDR" "ledger-core"
+
+# auth has no ledger-core dependency (docs/SCALE-EXPANSION.md section 1)
+# so it can start as soon as ledger-core's port check above passes —
+# ordering here is "ledger-core first" for the other three services'
+# sake, not auth's.
+start_bg "auth" "$LOG_DIR/auth.log" "$AUTH_BIN"
+wait_for_port "$AUTH_GRPC_ADDR" "auth"
+
+start_bg "tenant-registry" "$LOG_DIR/tenant-registry.log" "$TENANT_REGISTRY_BIN"
+wait_for_port "$TENANT_REGISTRY_GRPC_ADDR" "tenant-registry"
+
+start_bg "card-issuance" "$LOG_DIR/card-issuance.log" "$CARD_ISSUANCE_BIN"
+wait_for_port "$CARD_ISSUANCE_GRPC_ADDR" "card-issuance"
+
+start_bg "webhook-ingestion" "$LOG_DIR/webhook-ingestion.log" "$WEBHOOK_INGESTION_BIN"
+wait_for_port "$WEBHOOK_INGESTION_GRPC_ADDR" "webhook-ingestion"
 
 start_bg "gateway" "$LOG_DIR/gateway.log" "$GATEWAY_BIN"
 wait_for_port "$GATEWAY_GRPC_ADDR" "gateway"
@@ -134,5 +176,5 @@ echo "       ./bin/ration status --tenant <tenant-id>"
 echo "     for a recorded agent decision, or watch it land live in ./bin/tui's"
 echo "     activity feed."
 echo
-echo "Logs: $LOG_DIR/{ledger-core,gateway,agent}.log"
+echo "Logs: $LOG_DIR/{ledger-core,auth,tenant-registry,card-issuance,webhook-ingestion,gateway,agent}.log"
 echo "Stop everything with: scripts/stop-demo.sh"

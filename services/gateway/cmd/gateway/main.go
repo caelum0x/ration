@@ -7,6 +7,12 @@
 // dialing ledger-core directly only for SimulateDeposit, and merging
 // services/webhook-ingestion's normalized event stream into its own
 // activity feed.
+//
+// It also serves internal/httpapi, a REST/JSON facade over this exact
+// same Gateway gRPC service (docs/SCALE-EXPANSION.md section 7,
+// docs/adr/0003) on its own HTTP listener (cfg.HTTPAddr) — see that
+// package's doc comment for the route list and ADR 0003 for why gRPC,
+// not REST, remains the source of truth.
 package main
 
 import (
@@ -26,6 +32,7 @@ import (
 	"github.com/caelum0x/ration/services/gateway/internal/cardissuanceclient"
 	"github.com/caelum0x/ration/services/gateway/internal/config"
 	"github.com/caelum0x/ration/services/gateway/internal/grpcserver"
+	"github.com/caelum0x/ration/services/gateway/internal/httpapi"
 	"github.com/caelum0x/ration/services/gateway/internal/ledgerclient"
 	"github.com/caelum0x/ration/services/gateway/internal/ratelimit"
 	"github.com/caelum0x/ration/services/gateway/internal/webhookeventsclient"
@@ -175,10 +182,36 @@ func run(log *slog.Logger) error {
 
 	metricsSrv := met.Server(cfg.MetricsAddr)
 
+	// internal/httpapi (docs/SCALE-EXPANSION.md section 7, docs/adr/0003)
+	// is a REST/JSON facade in front of this same gRPC server: it holds
+	// a real gatewaypb.GatewayClient dialing this process's own gRPC
+	// listener above (GatewayGRPCDialAddr, a loopback address — see
+	// internal/config's doc comment on why that's distinct from the
+	// GatewayGRPCAddr bind address), so a REST request takes the exact
+	// same code path through grpcserver.Server a gRPC request would,
+	// never a second implementation of gateway.proto's RPCs.
+	selfMTLS := cfg.MTLS.WithDefaultServerName("gateway")
+	selfDialCreds, err := selfMTLS.DialOption()
+	if err != nil {
+		return err
+	}
+	selfConn, err := grpc.NewClient(cfg.GatewayGRPCDialAddr, append([]grpc.DialOption{selfDialCreds}, clientDialOpts...)...)
+	if err != nil {
+		return err
+	}
+	defer selfConn.Close()
+
+	restAPI := httpapi.NewHandler(gatewaypb.NewGatewayClient(selfConn), log)
+	httpSrv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           restAPI.Mux(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 	go func() {
 		log.Info("gateway gRPC server listening", "addr", cfg.GatewayGRPCAddr)
 		if err := grpcServer.Serve(lis); err != nil {
@@ -188,6 +221,12 @@ func run(log *slog.Logger) error {
 	go func() {
 		log.Info("gateway metrics server listening", "addr", cfg.MetricsAddr)
 		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+	}()
+	go func() {
+		log.Info("gateway REST facade listening", "addr", cfg.HTTPAddr)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 	}()
@@ -204,5 +243,6 @@ func run(log *slog.Logger) error {
 
 	grpcServer.GracefulStop()
 	_ = metricsSrv.Shutdown(shutdownCtx)
+	_ = httpSrv.Shutdown(shutdownCtx)
 	return nil
 }

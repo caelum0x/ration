@@ -1,14 +1,13 @@
 # Threat model
 
-A STRIDE pass over the service boundaries that exist in this repo today
-(the six phase-1 services plus `audit-log`, built in
-`docs/SCALE-EXPANSION.md` section 8) — not the hypothetical
-post-decomposition boundaries section 1 describes (`auth`,
-`tenant-registry`, `card-issuance`, `webhook-ingestion`), which have not
-shipped: there is no `services/auth` etc. directory yet, so a threat
-model written against it would be describing software that doesn't
-exist. This doc gets revised the day section 1 lands; until then, every
-claim below is checked against what actually runs.
+A STRIDE pass over the service boundaries that exist in this repo
+today: the phase-1 services (`ledger-core`, `agent`, `tui`, `cli`),
+`audit-log` (section 8), and the section 1 decomposition
+(`docs/SCALE-EXPANSION.md` section 1, `docs/adr/0004`) that split the
+old `gateway` monolith into `auth`, `tenant-registry`, `card-issuance`,
+`webhook-ingestion` and a thin `gateway` BFF in front of all four.
+Revised as of that split landing — every claim below is checked against
+what actually runs today, not a hypothetical future topology.
 
 Same standard as the rest of this project: name the exact file/RPC a
 mitigation lives in, and when something isn't mitigated, say so with a
@@ -23,21 +22,32 @@ precise TODO instead of a vague "should add auth later."
                           │  gRPC               │  gRPC
                           ▼                     ▼
 ┌─────────────────────────────────────────────────────┐
-│                       gateway (Go)                    │◀── Airwallex
-│  gateway.proto: IssueCard, AdjustCardLimit,            │    webhooks
-│  RationBridgeFunding, StreamActivity, ListCards        │    (HTTP, live
-│  HTTP :8080 /webhooks/airwallex (AIRWALLEX_MODE=live   │    mode only)
-│  only) — internal/ratelimit sits in front of every     │
-│  gRPC RPC on this service's public surface             │
-└───────────────────────┬───────────────────────────────┘
-                         │ gRPC (ApplyEntry, CheckReserveFloor, ...)
-                         ▼
+│                   gateway (Go) :7002 — thin BFF       │
+│  gateway.proto: IssueCard, AdjustCardLimit,            │
+│  RationBridgeFunding, StreamActivity, ListCards,       │
+│  SimulateDeposit — unchanged externally by section 1  │
+│  internal/ratelimit sits in front of every gRPC RPC    │
+│  on this service's public surface                      │
+└───┬──────────┬──────────────┬──────────────┬──────────┘
+    │ gRPC     │ gRPC          │ gRPC          │ gRPC (ApplyEntry,
+    ▼          ▼               ▼               │ CheckReserveFloor,
+┌────────┐ ┌──────────────┐ ┌──────────────┐  │ RecordDeposit, ...)
+│  auth  │ │tenant-registry│ │card-issuance │  │
+│ :7010  │ │    :7011      │ │   :7012      │  │
+│(not yet│ │ (tenant CRUD, │ │ Airwallex    │  │
+│ wired  │ │  proxies to   │ │ issuing +    │  │
+│ into   │ │  ledger-core) │ │ bridge math, │  │
+│ gateway│ └──────┬────────┘ │ the highest- │  │
+│  — see │        │ gRPC     │ value RPCs)  │  │
+│ gap 1) │        │          └──────┬───────┘  │
+└────────┘        │                 │ gRPC      │
+                   ▼                 ▼           ▼
 ┌─────────────────────────────────────────────────────┐
 │               ledger-core (Rust) :7001                 │
 │  ledger.proto: the ONLY implementation of ApplyEntry   │
 │  and RecordAgentDecision in this system — every        │
-│  money-moving/decision-recording call, from gateway,   │
-│  agent, or cli, ends up here.                          │
+│  money-moving/decision-recording call, from any Go     │
+│  service or cli, ends up here.                         │
 └───────────┬─────────────────────────────┬─────────────┘
             │ best-effort, async           │ C FFI (unsafe,
             │ gRPC mirror                  │ in-process, not
@@ -50,16 +60,35 @@ precise TODO instead of a vague "should add auth later."
 │  boundary from the WAL   │
 └─────────────────────────┘
 
+┌─────────────────────────────────────────────────────┐
+│          webhook-ingestion (Go) :7013 / :8081          │◀── Airwallex
+│  gRPC: StreamEvents (merged into gateway's own          │    webhooks
+│  activity feed via internal/webhookeventsclient);       │    (HTTP, always
+│  HTTP :8081 /webhooks/airwallex — always listening,     │    listening,
+│  independent of card-issuance's AIRWALLEX_MODE          │    not gated on
+│  (signature-verified against AIRWALLEX_WEBHOOK_SECRET,   │    a live mode)
+│  calls ledger-core's MarkDepositReceived directly)      │
+└───────────────────────┬───────────────────────────────┘
+                         │ gRPC (ListDeposits, MarkDepositReceived)
+                         ▼
+                   ledger-core (above)
+
    agent (Go) ── gRPC ──▶ ledger-core (ListLateDeposits, RecordAgentDecision)
        │         gRPC ──▶ gateway (RationBridgeFunding, IssueCard)
        └── HTTPS ──▶ Anthropic Messages API (or Railyard Relay — see
                       docs/AGENT-DESIGN.md)
+
+   card-issuance ── HTTPS ──▶ Airwallex Issuing API (AIRWALLEX_MODE=live
+                               only; mock mode, the default, never
+                               leaves the process)
 ```
 
-Every internal gRPC hop (cli/tui/agent → gateway/ledger-core, gateway →
-ledger-core, ledger-core → audit-log) can run mTLS (`pkg/mtls`,
-`ledger_core::mtls`, `infra/dev-ca/`) — opt-in, off by default, on by
-setting `<PREFIX>_MTLS_ENABLED=true` per service (see `.env.example`).
+Every internal gRPC hop (cli/tui/agent → gateway, gateway → auth/
+tenant-registry/card-issuance/webhook-ingestion/ledger-core,
+webhook-ingestion → ledger-core, ledger-core → audit-log) can run mTLS
+(`pkg/mtls`, `ledger_core::mtls`, `infra/dev-ca/`) — opt-in, off by
+default, on by setting `<PREFIX>_MTLS_ENABLED=true` per service (see
+`.env.example`).
 `services/wal` is a linked C library inside the `ledger-core` process,
 not a network boundary, and is out of scope for this doc (its threat
 model is "a malformed frame on disk" — covered by
@@ -77,9 +106,13 @@ STRIDE).
    `tests/apply_entry_proptest.rs`.
 3. **Agent decisions and their rationale** — `AgentDecisionRecord`, the
    audit trail for "why did the system grant/decline this."
-4. **Airwallex credentials** (`AIRWALLEX_API_KEY`,
-   `AIRWALLEX_WEBHOOK_SECRET`) — gateway-only, never logged (see
-   `internal/airwallex/live.go`).
+4. **Airwallex credentials** — `AIRWALLEX_API_KEY`/`AIRWALLEX_CLIENT_ID`
+   live in `card-issuance` only (it is the one service that calls
+   Airwallex's Issuing API; see `services/card-issuance/internal/
+   airwallex/live.go`); `AIRWALLEX_WEBHOOK_SECRET` lives in
+   `webhook-ingestion` only (the one service that verifies inbound
+   webhook deliveries). Neither credential is held by `gateway` anymore
+   post section-1 split — never logged in either service.
 5. **The Anthropic API key** — agent-only.
 6. **The append-only audit trail** itself (`audit-log`'s hash chain) —
    an asset specifically because it is meant to survive the compromise
@@ -112,51 +145,86 @@ one).
 
 ### 2. The Airwallex webhook sender (external, HTTP)
 
-Only reachable when `AIRWALLEX_MODE=live` (`services/gateway/cmd/
-gateway/main.go` only starts the `:8080` HTTP listener in that mode —
-in the default mock mode, this entire surface does not exist).
+Reaches `services/webhook-ingestion`'s own `:8081` HTTP listener
+(`services/webhook-ingestion/cmd/webhook-ingestion/main.go`), not
+`gateway` — this moved off gateway entirely in the section-1 split
+(docs/adr/0004). Unlike the pre-split gateway (which only started its
+webhook listener in `AIRWALLEX_MODE=live`), webhook-ingestion's HTTP
+listener always starts, independent of card-issuance's own
+`AIRWALLEX_MODE` — an unconfigured `AIRWALLEX_WEBHOOK_SECRET` makes
+every delivery fail signature verification (fail-closed), rather than
+the listener not existing at all.
 
 | STRIDE | Assessment |
 |---|---|
-| **S**poofing | Mitigated: every delivery is HMAC-SHA256'd over `x-timestamp + body` with `AIRWALLEX_WEBHOOK_SECRET` (`internal/airwallex/webhook.go`'s `verifySignature`), compared with `hmac.Equal` (constant-time). A sender without the shared secret cannot forge a valid signature. |
+| **S**poofing | Mitigated: every delivery is HMAC-SHA256'd over `x-timestamp + body` with `AIRWALLEX_WEBHOOK_SECRET` (`services/webhook-ingestion/internal/airwallex/webhook.go`'s `VerifySignature`), compared with `hmac.Equal` (constant-time). A sender without the shared secret cannot forge a valid signature. |
 | **T**ampering | Mitigated the same way — the signature covers the full body, so any bit flip invalidates it. |
 | **R**epudiation | N/A — Airwallex is an external system this project doesn't control the logs of; what matters is that a *valid* webhook can't be denied internally, and it can't (it's mirrored into `audit-log` transitively via the `MarkDepositReceived`/`ApplyEntry` call it triggers). |
 | **I**nformation disclosure | The webhook handler returns minimal responses (200/4xx), no ledger state is echoed back to the sender. |
-| **D**enial of service | **Gap, not mitigated**: `internal/ratelimit` is wired in front of gateway's *gRPC* server only (`grpc.ChainUnaryInterceptor(..., ratelimit.UnaryServerInterceptor(limiter))` in `cmd/gateway/main.go`); the plain `net/http` webhook listener (`internal/httpserver`) has no rate limiting of its own. A flood of (even validly-signed, replayed) webhook POSTs is not throttled before it reaches `verifySignature`/`MarkDepositReceived`. Precise TODO: add a token-bucket middleware to `internal/httpserver`'s mux, keyed on source IP or `x-timestamp`-derived identity, mirroring `internal/ratelimit`'s design. |
-| **E**levation of privilege | A valid webhook can only trigger `MarkDepositReceived` for the `tenant_id`/`deposit_id` named in its own payload — it cannot reach `ApplyEntry`/card-issuance paths directly. **Partial gap**: there is no timestamp freshness check (`verifySignature` validates the signature over whatever `x-timestamp` is given, but never checks it's recent) — a captured, validly-signed webhook is replayable indefinitely by a man-in-the-middle who recorded it, though replaying `MarkDepositReceived` for an already-received deposit is a no-op in `ledger-core::ledger` (status is already `Received`, not re-credited) rather than a double-credit. Precise TODO: reject deliveries where `|now - x-timestamp| > 5m` in `verifySignature`, both to shrink the replay window and to match Airwallex's own documented tolerance. |
+| **D**enial of service | **Gap, not mitigated**: `internal/ratelimit` is wired in front of gateway's *gRPC* server only (`grpc.ChainUnaryInterceptor(..., ratelimit.UnaryServerInterceptor(limiter))` in gateway's `cmd/gateway/main.go`); webhook-ingestion's plain `net/http` webhook listener (`internal/webhookhandler`) has no rate limiting of its own — and, post-split, can no longer even borrow gateway's gRPC-only limiter, since it's a fully separate process now. A flood of (even validly-signed, replayed) webhook POSTs is not throttled before it reaches `VerifySignature`/`MarkDepositReceived`. Precise TODO: add a token-bucket middleware to `internal/webhookhandler`'s mux, keyed on source IP or `x-timestamp`-derived identity, mirroring `internal/ratelimit`'s design — and give webhook-ingestion its own copy of that package (each split service owns its own copy of shared-shape internal utilities per docs/adr/0004, matching `ledgerclient`/`idgen`). |
+| **E**levation of privilege | A valid webhook can only trigger `MarkDepositReceived` for the `tenant_id`/`deposit_id` named in its own payload — it cannot reach `ApplyEntry`/card-issuance paths directly. **Partial gap**: there is no timestamp freshness check (`VerifySignature` validates the signature over whatever `x-timestamp` is given, but never checks it's recent) — a captured, validly-signed webhook is replayable indefinitely by a man-in-the-middle who recorded it, though replaying `MarkDepositReceived` for an already-received deposit is a no-op in `ledger-core::ledger` (status is already `Received`, not re-credited) rather than a double-credit. Precise TODO: reject deliveries where `|now - x-timestamp| > 5m` in `VerifySignature`, both to shrink the replay window and to match Airwallex's own documented tolerance. |
 
-### 3. Airwallex's API (gateway calling *out*)
+### 3. Airwallex's API (card-issuance calling *out*)
+
+Moved off gateway in the section-1 split (docs/adr/0004) — `gateway`
+itself makes no outbound HTTPS calls to Airwallex anymore; only
+`card-issuance` does.
 
 | STRIDE | Assessment |
 |---|---|
-| **S**poofing | Gateway verifies Airwallex's identity via normal TLS (HTTPS to `AIRWALLEX_BASE_URL`); no certificate pinning. A CA compromise could MITM this, same risk as any HTTPS API client — not specific to Ration. |
-| **I**nformation disclosure | `AIRWALLEX_API_KEY`/`AIRWALLEX_CLIENT_ID` live only in gateway's env (`internal/config/config.go`) and, in a real deployment, Secrets Manager (`infra/terraform/modules/service`) — never logged (checked: no `log`/`slog` call in `internal/airwallex/live.go` includes the key). |
-| **D**enial of service | If Airwallex's API is slow/down, every gateway call that depends on it (card issuance, control changes) blocks or errors — `AIRWALLEX_MODE=mock` exists specifically so demo/dev traffic never depends on Airwallex's actual availability. |
+| **S**poofing | card-issuance verifies Airwallex's identity via normal TLS (HTTPS to `AIRWALLEX_BASE_URL`); no certificate pinning. A CA compromise could MITM this, same risk as any HTTPS API client — not specific to Ration. |
+| **I**nformation disclosure | `AIRWALLEX_API_KEY`/`AIRWALLEX_CLIENT_ID` live only in card-issuance's env (`services/card-issuance/internal/config/config.go`) and, in a real deployment, Secrets Manager (`infra/terraform/modules/service`) — never logged (checked: no `log`/`slog` call in `services/card-issuance/internal/airwallex/live.go` includes the key). |
+| **D**enial of service | If Airwallex's API is slow/down, every card-issuance call that depends on it (card issuance, control changes) blocks or errors, and (via gateway's fan-out) every gateway `IssueCard`/`AdjustCardLimit` call in turn — `AIRWALLEX_MODE=mock` exists specifically so demo/dev traffic never depends on Airwallex's actual availability. |
 
 ### 4. Anthropic's API / an LLM provider (agent calling *out*)
 
 | STRIDE | Assessment |
 |---|---|
 | **S**poofing | Standard HTTPS; `ANTHROPIC_API_KEY` authenticates the agent to Anthropic, not the reverse — agent has no way to detect a MITM'd response beyond TLS itself. |
-| **T**ampering / **E**levation of privilege | This is the actually interesting boundary: the LLM's output is *untrusted input* the moment it comes back. `docs/AGENT-DESIGN.md`'s hard-rule envelope is the mitigation — the model is told "you may grant up to exactly X" but the real enforcement is that `services/gateway/internal/bridge/service.go` re-validates any `ration_bridge_funding` tool call against reserve floor/bridge cap/velocity cap independently, and `ledger-core::ledger::apply_entry` enforces the reserve floor a third time. A fully adversarial or hijacked model response **cannot** move money past the floor — it can only waste a bridge/notify call or produce a nonsensical `rationale`. |
+| **T**ampering / **E**levation of privilege | This is the actually interesting boundary: the LLM's output is *untrusted input* the moment it comes back. `docs/AGENT-DESIGN.md`'s hard-rule envelope is the mitigation — the model is told "you may grant up to exactly X" but the real enforcement is that `services/card-issuance/internal/bridge/service.go` re-validates any `ration_bridge_funding` tool call against reserve floor/bridge cap/velocity cap independently, and `ledger-core::ledger::apply_entry` enforces the reserve floor a third time. A fully adversarial or hijacked model response **cannot** move money past the floor — it can only waste a bridge/notify call or produce a nonsensical `rationale`. |
 | **I**nformation disclosure | Whatever `rationale`/tenant data the agent includes in its prompt (`services/agent/internal/llm/prompt.go`) is sent to Anthropic (or Railyard Relay) — i.e., tenant deposit amounts, balances, and trigger text leave the system boundary on every decision. This is an accepted, documented data flow (same as any LLM-backed feature), not a bug, but it is the thing to point at in a data-residency conversation. |
 | **D**enial of service | `services/agent/internal/llm` has no circuit breaker: a slow/erroring LLM provider stalls that tick's decision loop but `loop.Runner.Tick` is called on a fixed interval (`RATION_AGENT_POLL_INTERVAL_SECONDS`) independently each time, so one bad tick doesn't cascade into a crash loop. |
 | **Gap** | `rationale` text (LLM-authored, derived from attacker-influenceable `trigger`/tenant data) is printed verbatim by the CLI's `status` command (`services/cli/cmd/ration/status.go`'s `truncate` only slices the string, never strips control characters, before a plain `tabwriter` write). A sufficiently adversarial trigger→prompt→rationale chain could, in principle, inject ANSI escapes into an operator's terminal (cursor manipulation, hidden text) — a local annoyance/spoofing risk, not a money-moving one. (The TUI does not currently display `rationale`/agent decisions at all — only tenants, deposits, cards, and the live activity stream, per `services/tui/internal/client/grpc.go` — so this is a CLI-only gap today, and becomes a TUI one too the day agent-decision display is added there.) Precise TODO: strip or escape C0/C1 control characters from `rationale`/`memo` before display in `status.go`. |
 
 ### 5. A compromised `gateway`
 
-Gateway holds Airwallex credentials and is the only service that talks
-to Airwallex directly.
+Post section-1 split (docs/adr/0004), gateway is a thin BFF: it holds
+no Airwallex credentials of its own anymore (those moved to
+card-issuance/webhook-ingestion — see asset 4) and no business logic
+beyond request/response translation (`internal/grpcserver`) and
+activity-feed fan-in. Its effective reach is now "whatever
+auth/tenant-registry/card-issuance/webhook-ingestion/ledger-core would
+do for a request that looks legitimate," not independent logic of its
+own.
 
 | STRIDE | Assessment |
 |---|---|
-| **T**ampering | Can call any `ledger-core` RPC for any tenant (same as the CLI/TUI gap — gateway has no more and no less effective access than they do). Cannot rewrite `ledger-core`'s WAL or `audit-log`'s chain directly — those are separate processes/disks it has no filesystem access to. |
-| **R**epudiation | **This is exactly what `audit-log` defends against.** A compromised gateway *can* call `ApplyEntry` with attacker-chosen parameters, but it cannot make `ledger-core` skip mirroring that call into `audit-log` (the mirror call is inside `ledger-core`'s own `grpc.rs`, not something gateway's request controls) and it cannot reach into `audit-log`'s append-only, hash-chained file to retroactively edit or delete what already landed — `audit-log` is a different process with its own disk that gateway/ledger-core have no access to. This is the specific property section 8 asked for: "a compromised card-issuance service can't quietly rewrite its own history." |
-| **I**nformation disclosure | Can exfiltrate `AIRWALLEX_API_KEY`/`AIRWALLEX_WEBHOOK_SECRET` (held in its own process memory/env) and any tenant data reachable via `ledger-core`'s RPCs (no tenant scoping — see the gap below). |
-| **D**enial of service | Can flood `ledger-core` with `ApplyEntry` calls (no rate limiting on ledger-core itself, only on gateway's own public surface — see actor 1's DoS row). Can also disable/neuter its *own* rate limiter (it's in-process config, `RATION_RATELIMIT_*` env vars) — this doesn't help an external attacker but does mean "gateway's rate limiter" is not a control that survives gateway's own compromise, only external abuse of an uncompromised gateway. |
-| **E**levation of privilege | Already has the maximum privilege this system grants to any internal service (call any ledger-core RPC for any tenant). mTLS, once enabled, would at least confirm the *caller* really is a service holding a cert signed by the shared CA — it does not scope *which* RPCs/tenants that caller may touch. |
+| **T**ampering | Can call any RPC on any of its four backing services, for any tenant (same as the CLI/TUI gap — gateway has no more and no less effective access than they do, just one more hop). Cannot rewrite `ledger-core`'s WAL or `audit-log`'s chain directly — those are separate processes/disks it has no filesystem access to. |
+| **R**epudiation | **This is exactly what `audit-log` defends against.** A compromised gateway *can* fan out `RationBridgeFunding`/`IssueCard` calls to card-issuance with attacker-chosen parameters, but it cannot make `ledger-core` skip mirroring the resulting `ApplyEntry`/`RecordAgentDecision` into `audit-log` (the mirror call is inside `ledger-core`'s own `grpc.rs`, not something gateway's or card-issuance's request controls) and it cannot reach into `audit-log`'s append-only, hash-chained file to retroactively edit or delete what already landed. This is the specific property section 8 asked for: "a compromised card-issuance service can't quietly rewrite its own history" — equally true of a compromised gateway sitting in front of it. |
+| **I**nformation disclosure | Can read any tenant data reachable via its four backing services' RPCs (no tenant scoping — see the gap below) but, unlike pre-split, cannot exfiltrate `AIRWALLEX_API_KEY`/`AIRWALLEX_WEBHOOK_SECRET` directly — those now live in card-issuance's/webhook-ingestion's own process memory, a separate blast radius (see actor 6 below). |
+| **D**enial of service | Can flood `ledger-core` (via SimulateDeposit) or card-issuance/webhook-ingestion (via its gRPC fan-out) with calls — no rate limiting on any of those services directly, only on gateway's own public surface (see actor 1's DoS row). Can also disable/neuter its *own* rate limiter (it's in-process config, `RATION_RATELIMIT_*` env vars) — this doesn't help an external attacker but does mean "gateway's rate limiter" is not a control that survives gateway's own compromise, only external abuse of an uncompromised gateway. |
+| **E**levation of privilege | Already has the maximum privilege this system grants to any internal service (call any backing-service RPC for any tenant). mTLS, once enabled, would at least confirm the *caller* really is a service holding a cert signed by the shared CA — it does not scope *which* RPCs/tenants that caller may touch. |
 
-### 6. A compromised `agent`
+### 6. A compromised `card-issuance`, `webhook-ingestion`, `auth` or `tenant-registry`
+
+The four section-1 split services (docs/adr/0004) share a common shape
+for this analysis: each is reachable only from gateway (card-issuance,
+tenant-registry), from gateway plus the public internet (webhook-
+ingestion's HTTP listener), or from nothing yet (auth — see gap 1), and
+each has no more effective privilege against `ledger-core` than gateway
+itself already has, since none of them does anything gateway couldn't
+also ask ledger-core to do directly.
+
+| STRIDE | Assessment |
+|---|---|
+| **S**poofing | Same mTLS story as every other internal service — opt-in, off by default (`CARD_ISSUANCE_MTLS_*`/`WEBHOOK_INGESTION_MTLS_*`/`AUTH_MTLS_*`/`TENANT_REGISTRY_MTLS_*`, `infra/dev-ca/`'s `SERVICES` list now includes all four). |
+| **T**ampering | card-issuance can call `ApplyEntry`/`RecordDeposit` via its own `ledgerclient` for any tenant — identical reach to what gateway had pre-split for card/bridge operations. tenant-registry can call `CreateTenant`/`ListTenants`. webhook-ingestion can call `MarkDepositReceived`. auth mutates only its own in-memory API-key/JWT/CA state (`internal/apikey`, `internal/jwtauth`, `internal/servicecertca`) — it has no ledger-core dependency at all (see its own `internal/config` doc comment), so a compromised auth cannot touch money state directly, only mint credentials nothing currently checks (gap 1). |
+| **R**epudiation | card-issuance's and webhook-ingestion's ledger-core calls are mirrored into `audit-log` exactly like gateway's were pre-split (the mirror lives in `ledger-core`, not in the caller) — same guarantee, one hop earlier in the call chain now. |
+| **I**nformation disclosure | card-issuance uniquely holds `AIRWALLEX_API_KEY`/`AIRWALLEX_CLIENT_ID`; webhook-ingestion uniquely holds `AIRWALLEX_WEBHOOK_SECRET` — compromising either one is strictly *less* exposure than the pre-split gateway holding both plus every ledger-core RPC's reach in one process. auth holds `AUTH_JWT_SIGNING_KEY`, a secret with no current blast radius (nothing verifies the JWTs it mints yet — gap 1) but a real one the day that wiring lands: a leaked signing key would let an attacker mint valid-looking tenant-scoped tokens for any tenant. |
+| **D**enial of service | Each is an independent deployable (its own `go.mod`, its own container, its own autoscaling policy per `infra/terraform/modules/service` once applied) — flooding one (e.g. a webhook replay storm against webhook-ingestion) no longer starves the others' capacity the way one shared gateway process would have pre-split. This is the specific scaling property section 1 asked for. |
+| **E**levation of privilege | card-issuance/tenant-registry/webhook-ingestion: same ceiling as gateway already had for their respective slice of gateway.proto's old surface — no new privilege created by the split. auth: **the interesting one** — `IssueServiceCert`/`MintJWT` exist today with no caller-side authorization of their own (anyone who can reach auth's gRPC port can mint a JWT for any `tenant_id`/subject, or a service cert for any `service_name`) because nothing calls them yet (gap 1) — once something *does* depend on auth's output for real authorization, auth itself becomes as privileged as whatever trusts it, and needs its own access control, not just "it exists." |
+
+### 7. A compromised `agent`
 
 Holds the Anthropic/Relay API key; calls `ledger-core` (read late
 deposits, record decisions) and `gateway` (request bridge funding, card
@@ -169,7 +237,7 @@ actions).
 | **I**nformation disclosure | Can exfiltrate the Anthropic/Relay API key and, via `ListLateDeposits`/`ListEntries`, every tenant's deposit/balance history. |
 | **D**enial of service | Could call `RationBridgeFunding`/`IssueCard` in a tight loop; bounded by gateway's rate limiter (per-tenant) for whatever tenant_id it targets, not for ledger-core calls it makes directly. |
 
-### 7. A compromised `ledger-core`
+### 8. A compromised `ledger-core`
 
 The most consequential compromise on this list — it's the money's
 single source of truth.
@@ -182,7 +250,7 @@ single source of truth.
 | **D**enial of service | Single-writer by design (`max_capacity = 1` in every `infra/terraform/envs/*/main.tf`, "single-writer hash chain" comments throughout) — there is exactly one `ledger-core` process; killing it is a full outage, by construction, not a bug. `services/wal` + `tests/recovery.rs` prove restart-and-replay is safe, which bounds the *blast radius* of a crash/DoS to "a few seconds of unavailability," not "lost or corrupted state." |
 | **E**levation of privilege | N/A — it's already the most-privileged service in the system. |
 
-### 8. A compromised `audit-log`
+### 9. A compromised `audit-log`
 
 | STRIDE | Assessment |
 |---|---|
@@ -206,9 +274,10 @@ single source of truth.
   public gRPC surface — bounds noisy-neighbor DoS between tenants, not
   a security boundary between trust levels.
 - **The reserve floor invariant**, enforced three times independently
-  (agent's pre-check, gateway's `bridge`/`card` services, ledger-core's
-  `apply_entry`) — defense in depth against a bug or compromise at any
-  *one* of those layers, not all three simultaneously.
+  (agent's pre-check, card-issuance's `bridge`/`cardsvc` services,
+  ledger-core's `apply_entry`) — defense in depth against a bug or
+  compromise at any *one* of those layers, not all three
+  simultaneously.
 - **Idempotency keys** on `ApplyEntry` and `(source_service, kind,
   ref_id)` on `audit-log.Append` — a retried call (network blip, crash
   mid-write) is always safe to resend, never double-applies.
@@ -221,22 +290,31 @@ single source of truth.
 
 ## Known gaps (precise, scoped — not glossed over)
 
-1. **No tenant-scoped authorization anywhere.** Every RPC that takes a
-   `tenant_id` (`ledger-core`'s entire surface, `gateway`'s entire
-   surface) trusts whatever `tenant_id` the caller supplies — there is
-   no notion of "this caller is only allowed to act as tenant X." This
-   is *by design for phase 1 and today* (`docs/SCALE-EXPANSION.md`
-   section 1's `auth` service — tenant API-key issuance, JWT minting —
-   is exactly the planned fix, and it has not shipped: there is no
-   `services/auth` directory). mTLS proves service identity
-   ("this is really gateway calling"), never tenant identity ("this
-   call is authorized to touch tenant X's money"). This is the single
-   biggest residual risk in the system today and the reason this repo
-   is explicitly pre-production. **Precise TODO**: `services/auth` per
-   section 1, with every tenant-scoped RPC in `ledger.proto`/
-   `gateway.proto` gaining a tenant-bound credential check (e.g. the
-   JWT's `tenant_id` claim must match the request's `tenant_id`) before
-   this is safe to run with real tenants/real money.
+1. **No tenant-scoped authorization anywhere, still.** Every RPC that
+   takes a `tenant_id` (`ledger-core`'s entire surface, `gateway`'s
+   entire surface) trusts whatever `tenant_id` the caller supplies —
+   there is no notion of "this caller is only allowed to act as tenant
+   X." `services/auth` now exists (`docs/SCALE-EXPANSION.md` section 1)
+   and its `IssueAPIKey`/`VerifyAPIKey`/`MintJWT`/`VerifyJWT` RPCs all
+   work correctly in isolation (`internal/apikey`, `internal/jwtauth`
+   are both unit-tested) — but **nothing calls them yet**: `gateway`'s
+   `internal/grpcserver` does not dial auth at all, and no RPC in
+   `ledger.proto`/`gateway.proto`/`card_issuance.proto`/
+   `tenant_registry.proto` checks a caller-presented API key or JWT
+   before acting. auth shipping as a service changes nothing about this
+   gap by itself — it only becomes a mitigation the day gateway (or
+   each split service directly) actually verifies a credential before
+   proxying a tenant-scoped call. mTLS proves service identity ("this
+   is really gateway calling"), never tenant identity ("this call is
+   authorized to touch tenant X's money"), and auth existing-but-unwired
+   doesn't change that either. This is the single biggest residual risk
+   in the system today and the reason this repo is explicitly
+   pre-production. **Precise TODO**: wire `gateway`'s `internal/
+   grpcserver` (or a shared interceptor every split service imports) to
+   call `auth.VerifyAPIKey`/`VerifyJWT` on every tenant-scoped RPC and
+   reject a mismatch between the verified identity's `tenant_id` and the
+   request's `tenant_id`, before this is safe to run with real
+   tenants/real money.
 2. **`audit-log` trusts the claimed `source_service` field verbatim.**
    `AppendRequest.source_service` is attacker-controlled data from
    audit-log's point of view — with mTLS *disabled* (the default),

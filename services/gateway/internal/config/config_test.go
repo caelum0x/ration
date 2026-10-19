@@ -7,6 +7,7 @@ func clearEnv(t *testing.T) {
 	keys := []string{
 		"LEDGER_CORE_ADDR", "CARD_ISSUANCE_ADDR", "WEBHOOK_INGESTION_ADDR",
 		"GATEWAY_GRPC_ADDR", "GATEWAY_METRICS_ADDR",
+		"GATEWAY_GRPC_DIAL_ADDR", "GATEWAY_HTTP_ADDR",
 		"RATION_RATELIMIT_RPS", "RATION_RATELIMIT_BURST",
 		"RATION_RATELIMIT_SWEEP_INTERVAL_MINUTES",
 	}
@@ -35,6 +36,12 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.RateLimitBurst != 40 {
 		t.Errorf("RateLimitBurst = %v, want 40", cfg.RateLimitBurst)
+	}
+	if cfg.GatewayGRPCDialAddr != "localhost:7002" {
+		t.Errorf("GatewayGRPCDialAddr = %q, want localhost:7002", cfg.GatewayGRPCDialAddr)
+	}
+	if cfg.HTTPAddr != "localhost:8082" {
+		t.Errorf("HTTPAddr = %q, want localhost:8082", cfg.HTTPAddr)
 	}
 }
 

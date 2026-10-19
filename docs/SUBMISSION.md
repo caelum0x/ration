@@ -88,7 +88,7 @@ status in detail. Short version:
   service, the TUI, the CLI, and defense-in-depth re-validation at the
   gateway layer.
 - **Mocked**: `AIRWALLEX_MODE=mock` (the default) runs against
-  `services/gateway/internal/airwallex/mock.go`, an in-memory fake that
+  `services/card-issuance/internal/airwallex/mock.go`, an in-memory fake that
   mirrors the real Issuing API, Global Accounts, and webhook payload
   shapes closely enough that flipping to `AIRWALLEX_MODE=live` with real
   sandbox credentials is a one-line env change, not a rewrite — same code

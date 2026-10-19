@@ -2,11 +2,21 @@
 
 ## Status
 
-Accepted as the target decomposition (`docs/SCALE-EXPANSION.md` section
-1). Not yet executed in code as of this writing: `services/gateway` is
-still the single Go monolith described below, and this ADR records the
-boundaries along which it will be cut so the split is a mechanical
-extraction of already-separated packages, not a redesign.
+Accepted and executed (`docs/SCALE-EXPANSION.md` section 1):
+`services/auth`, `services/tenant-registry`, `services/card-issuance`
+and `services/webhook-ingestion` exist as their own Go modules, each its
+own gRPC server, and `services/gateway` is now the thin BFF described in
+the Decision section below — `internal/card`, `internal/bridge`,
+`internal/tenant`, `internal/airwallex` and `internal/httpserver` no
+longer exist under `services/gateway`; their logic moved verbatim into
+the four new services (see each new service's own doc comments for the
+mechanical-extraction details, and `services/card-issuance/internal/bridge/service_test.go`,
+carried over unchanged from the old `services/gateway/internal/bridge/service_test.go`,
+for proof the business logic itself didn't change). `gateway.proto` is
+byte-for-byte unchanged, so `services/agent`, `services/tui` and
+`services/cli` needed no changes. This ADR's original boundary rationale
+below is kept as-written (it described the boundaries correctly; only
+this Status section was forward-looking at the time it was accepted).
 
 ## Context
 
@@ -134,7 +144,7 @@ utilities.
   `webhook_ingestion.proto`) is internal-only; `gateway.proto` remains
   the one public aggregate surface external callers (TUI, CLI, the
   future REST facade) ever see — unchanged externally, per the spec.
-- Until this split lands, `RUNBOOK.md`'s diagnosis paths for gateway
-  issues point at `services/gateway/internal/<package>`, not at a
-  separate deployable — this ADR is the record of where those paths move
-  once the split is executed.
+- `RUNBOOK.md`'s diagnosis paths for card/bridge/webhook issues now
+  point at `services/card-issuance/internal/<package>` and
+  `services/webhook-ingestion/internal/<package>` respectively, not at
+  `services/gateway/internal/<package>` — updated alongside this split.

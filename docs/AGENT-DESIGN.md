@@ -11,10 +11,11 @@ platform's reserve floor, and make the tradeoff auditable.
 ## Hard rules (deterministic, never delegated to the LLM)
 
 Implemented identically in `services/agent/internal/policy/rules.go` (agent
-side, pre-check) and `services/gateway/internal/bridge/service.go` (gateway
-side, enforced again — defense in depth, the agent is not trusted as the
-only gate) and ultimately re-enforced by `ledger-core::ledger::apply_entry`
-(the actual source of truth — even a buggy gateway can't breach it):
+side, pre-check) and `services/card-issuance/internal/bridge/service.go`
+(card-issuance side, enforced again behind the gateway BFF — defense in
+depth, the agent is not trusted as the only gate) and ultimately
+re-enforced by `ledger-core::ledger::apply_entry` (the actual source of
+truth — even a buggy gateway or card-issuance can't breach it):
 
 1. **Reserve floor**: `tenant.reserve_floor_minor_units` is the platform's
    own capital, never touchable. `headroom = available_balance -

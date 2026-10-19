@@ -3,17 +3,27 @@
 #
 #   docker compose up --build
 #
-# Brings up the four deployable services (ledger-core, gateway, agent,
-# audit-log) wired together exactly like infra/terraform/envs/dev wires
-# them in AWS: ledger-core is the single-writer ledger, gateway fronts
-# it in AIRWALLEX_MODE=mock (no real Airwallex credentials needed),
-# agent polls both, and audit-log is up as a standing service that
-# ledger-core actually mirrors into — see
-# services/ledger-core/src/audit_mirror.rs, docs/SCALE-EXPANSION.md
-# section 8. gateway's own AUDIT_LOG_ADDR below is set but inert (see
-# infra/terraform/README.md): ApplyEntry/RecordAgentDecision are both
-# ledger-core RPCs, so every call gateway makes to them is already
-# mirrored once, centrally, by ledger-core.
+# Brings up every deployable service wired together exactly like
+# infra/terraform/envs/dev wires them in AWS: ledger-core is the
+# single-writer ledger; auth, tenant-registry, card-issuance (in
+# AIRWALLEX_MODE=mock, no real Airwallex credentials needed) and
+# webhook-ingestion are the section-1 split services
+# (docs/SCALE-EXPANSION.md section 1, docs/adr/0004); gateway is the
+# thin BFF fanning out to all four, which is what agent/cli/tui actually
+# dial — gateway.proto's external surface is unchanged by the split;
+# audit-log is up as a standing service that ledger-core actually
+# mirrors into — see services/ledger-core/src/audit_mirror.rs,
+# docs/SCALE-EXPANSION.md section 8. gateway's own AUDIT_LOG_ADDR below
+# is set but inert (see infra/terraform/README.md): ApplyEntry/
+# RecordAgentDecision are both ledger-core RPCs, so every call gateway
+# makes to them is already mirrored once, centrally, by ledger-core.
+#
+# AUTH_JWT_SIGNING_KEY has no default (services/auth/internal/config) —
+# set it in a .env file next to this docker-compose.yml (e.g.
+# `echo "AUTH_JWT_SIGNING_KEY=$(openssl rand -base64 32)" >> .env`,
+# docker compose reads .env automatically) or export it in your shell
+# before `docker compose up`; the auth service's entry below fails fast
+# with a clear message if it's unset, matching Load()'s own behavior.
 #
 # services/tui and services/cli are interactive operator tools, not
 # long-running services (same reasoning as infra/terraform/envs/*/main.tf
@@ -33,7 +43,7 @@
 # otel-collector); grafana is provisioned (infra/grafana/provisioning)
 # with both as datasources plus a starter dashboard
 # (infra/grafana/dashboards/ration-overview.json). None of this is a
-# hard dependency for the four app services — every exporter is
+# hard dependency for any of the app services — every exporter is
 # fail-open (see pkg/telemetry's and
 # services/ledger-core/src/telemetry.rs's doc comments): if you comment
 # out the observability services below, the rest of the stack still
@@ -79,6 +89,98 @@ services:
     volumes:
       - ledger_core_data:/data
 
+  # --- section-1 split services (docs/SCALE-EXPANSION.md section 1,
+  # docs/adr/0004): auth, tenant-registry, card-issuance and
+  # webhook-ingestion are each their own deployable here, independently
+  # scalable/restartable from the gateway BFF that fans out to them and
+  # from each other. Port numbering (7010-7013) matches each service's
+  # own internal/config doc comment. ---
+
+  auth:
+    build:
+      context: .
+      dockerfile: services/auth/Dockerfile
+    image: ration/auth:local
+    restart: unless-stopped
+    depends_on:
+      - otel-collector
+    ports:
+      - "7010:7010"
+      - "9098:9098"
+    environment:
+      AUTH_GRPC_ADDR: "0.0.0.0:7010"
+      AUTH_METRICS_ADDR: "0.0.0.0:9098"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      # No default (see services/auth/internal/config's doc comment) —
+      # a real deployment sets this from Secrets Manager
+      # (infra/terraform/modules/service/) or a .env file next to this
+      # docker-compose.yml, never a committed value. `docker compose up`
+      # fails fast here if it's unset, matching Load()'s own fail-fast
+      # behavior.
+      AUTH_JWT_SIGNING_KEY: "${AUTH_JWT_SIGNING_KEY:?set AUTH_JWT_SIGNING_KEY in a .env file or your shell, e.g. openssl rand -base64 32}"
+
+  tenant-registry:
+    build:
+      context: .
+      dockerfile: services/tenant-registry/Dockerfile
+    image: ration/tenant-registry:local
+    restart: unless-stopped
+    depends_on:
+      - ledger-core
+      - otel-collector
+    ports:
+      - "7011:7011"
+      - "9095:9095"
+    environment:
+      LEDGER_CORE_ADDR: "ledger-core:7001"
+      TENANT_REGISTRY_GRPC_ADDR: "0.0.0.0:7011"
+      TENANT_REGISTRY_METRICS_ADDR: "0.0.0.0:9095"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+
+  card-issuance:
+    build:
+      context: .
+      dockerfile: services/card-issuance/Dockerfile
+    image: ration/card-issuance:local
+    restart: unless-stopped
+    depends_on:
+      - ledger-core
+      - otel-collector
+    ports:
+      - "7012:7012"
+      - "9096:9096"
+    environment:
+      AIRWALLEX_MODE: "mock"
+      AIRWALLEX_BASE_URL: "https://api-demo.airwallex.com"
+      LEDGER_CORE_ADDR: "ledger-core:7001"
+      CARD_ISSUANCE_GRPC_ADDR: "0.0.0.0:7012"
+      CARD_ISSUANCE_METRICS_ADDR: "0.0.0.0:9096"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      RATION_BRIDGE_MAX_FRACTION: "0.6"
+      RATION_BRIDGE_MIN_GRANT_MINOR_UNITS: "500"
+      RATION_BRIDGE_VELOCITY_WINDOW_HOURS: "24"
+
+  webhook-ingestion:
+    build:
+      context: .
+      dockerfile: services/webhook-ingestion/Dockerfile
+    image: ration/webhook-ingestion:local
+    restart: unless-stopped
+    depends_on:
+      - ledger-core
+      - otel-collector
+    ports:
+      - "7013:7013"
+      - "8081:8081"
+      - "9097:9097"
+    environment:
+      AIRWALLEX_WEBHOOK_SECRET: "${AIRWALLEX_WEBHOOK_SECRET:-}"
+      LEDGER_CORE_ADDR: "ledger-core:7001"
+      WEBHOOK_INGESTION_GRPC_ADDR: "0.0.0.0:7013"
+      WEBHOOK_INGESTION_HTTP_ADDR: "0.0.0.0:8081"
+      WEBHOOK_INGESTION_METRICS_ADDR: "0.0.0.0:9097"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+
   gateway:
     build:
       context: .
@@ -87,23 +189,29 @@ services:
     restart: unless-stopped
     depends_on:
       - ledger-core
+      - card-issuance
+      - webhook-ingestion
       - otel-collector
     ports:
       - "7002:7002"
-      - "8080:8080"
+      - "8082:8082"
       - "9091:9091"
     environment:
-      AIRWALLEX_MODE: "mock"
-      AIRWALLEX_BASE_URL: "https://api-demo.airwallex.com"
       LEDGER_CORE_ADDR: "ledger-core:7001"
+      CARD_ISSUANCE_ADDR: "card-issuance:7012"
+      WEBHOOK_INGESTION_ADDR: "webhook-ingestion:7013"
       GATEWAY_GRPC_ADDR: "0.0.0.0:7002"
-      GATEWAY_HTTP_ADDR: "0.0.0.0:8080"
+      # internal/httpapi's REST/JSON facade (docs/SCALE-EXPANSION.md
+      # section 7, docs/adr/0003) dials this process's own gRPC
+      # listener above at GATEWAY_GRPC_DIAL_ADDR — "localhost:7002"
+      # reaches "0.0.0.0:7002" from inside this same container — then
+      # serves REST on GATEWAY_HTTP_ADDR:
+      #
+      #   curl http://localhost:8082/v1/tenants/tenant_1/cards
+      GATEWAY_GRPC_DIAL_ADDR: "localhost:7002"
+      GATEWAY_HTTP_ADDR: "0.0.0.0:8082"
       GATEWAY_METRICS_ADDR: "0.0.0.0:9091"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
-      RATION_DATA_DIR: "/data"
-      RATION_BRIDGE_MAX_FRACTION: "0.6"
-      RATION_BRIDGE_MIN_GRANT_MINOR_UNITS: "500"
-      RATION_BRIDGE_VELOCITY_WINDOW_HOURS: "24"
       RATION_RATELIMIT_RPS: "20"
       RATION_RATELIMIT_BURST: "40"
       RATION_RATELIMIT_SWEEP_INTERVAL_MINUTES: "10"
@@ -114,8 +222,6 @@ services:
       # audit_mirror. Set anyway for the day gateway needs a direct
       # audit-log client of its own.
       AUDIT_LOG_ADDR: "audit-log:7003"
-    volumes:
-      - gateway_data:/data
 
   agent:
     build:
@@ -245,7 +351,6 @@ services:
 
 volumes:
   ledger_core_data:
-  gateway_data:
   audit_log_data:
   prometheus_data:
   grafana_data:

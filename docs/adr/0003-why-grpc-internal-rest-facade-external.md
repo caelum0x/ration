@@ -2,12 +2,10 @@
 
 ## Status
 
-Accepted for the service-to-service surface (already built: every
-service-to-service call in the codebase today is gRPC over the proto
-contracts in `proto/`). The external REST/JSON facade described in
-`docs/SCALE-EXPANSION.md` section 7 is planned but not yet implemented
-as of this writing — see Consequences for the precise state and the
-TODO it leaves.
+Accepted and fully implemented. Every service-to-service call in the
+codebase is gRPC over the proto contracts in `proto/`, and the external
+REST/JSON facade and SDKs described in `docs/SCALE-EXPANSION.md` section
+7 are now built — see Consequences for exactly what exists and where.
 
 ## Context
 
@@ -109,18 +107,41 @@ Why gRPC first rather than REST first:
 
 ## Consequences
 
-- Anything built under `internal/httpapi` (or via `grpc-gateway`
-  annotations) must call into the *same* `Gateway` gRPC service gateway
-  already runs — enforced by code review, not by tooling today; a
-  follow-up (not yet built) would be a lint/CI check that `internal/
-  httpapi` imports only the generated `Gateway` client, never
-  `internal/bridge` or `internal/card` directly.
-- **Explicit TODO, not yet done**: `sdk/go/ration`, `sdk/rust/
-  ration-client`, and the REST facade itself (`internal/httpapi` or
-  `grpc-gateway` annotations on `gateway.proto`) do not exist in the repo
-  yet. This ADR records the decision taken before implementation so the
-  facade, when built, has a settled design to build against rather than
-  improvising the gRPC-vs-REST tradeoff mid-implementation.
+- `services/gateway/internal/httpapi` is the hand-rolled facade this ADR
+  called for: `cmd/gateway/main.go` dials this process's own gRPC
+  listener (a loopback `GatewayClient`, `GATEWAY_GRPC_DIAL_ADDR`) and
+  passes that client into `httpapi.NewHandler` — every REST handler in
+  that package calls exactly that client, never
+  `internal/cardissuanceclient`, `internal/ledgerclient`, or any other
+  business-logic package directly. That boundary (REST handlers may only
+  import the generated `Gateway` client) is enforced by code review
+  today, same as the day this ADR was first written; the lint/CI check
+  described below is still a follow-up, not yet built.
+- `sdk/go/ration` and `sdk/rust/ration-client` are built: thin typed
+  clients wrapping the generated `gateway.proto` stubs (Go via
+  `pkg/pb/gateway`, Rust via `tonic-build` against `proto/gateway.proto`
+  directly in the SDK's own `build.rs`) with ergonomic method
+  signatures. Neither reimplements any RPC's behavior — both are pure
+  wire-format + transport, exactly as this ADR specified.
+- The REST facade is documented, in its own package doc comment
+  (`services/gateway/internal/httpapi`'s doc.go-equivalent top-of-file
+  comment) and in this ADR, as "a convenience facade over the gRPC
+  source of truth" — curl-able at `GATEWAY_HTTP_ADDR` (default
+  `localhost:8082`), e.g. `curl http://localhost:8082/v1/tenants/
+  tenant_1/cards`. `StreamActivity`'s gRPC server-streaming RPC has no
+  REST equivalent primitive (as predicted below): the facade
+  approximates it with newline-delimited JSON on `GET /v1/activity`,
+  explicitly documented as an approximation, not a second streaming
+  protocol with its own semantics.
+- **Known, precisely-scoped gap**: a `GetCard` call for a nonexistent
+  card ID currently surfaces as gRPC code `Unknown` / HTTP 500 through
+  this facade, not `NotFound` / 404, because
+  `services/card-issuance/internal/cardsvc.Service.GetCard` returns a
+  plain wrapped Go error rather than a `status.Error(codes.NotFound,
+  ...)` — every `GatewayClient` caller (TUI, CLI, this facade, both
+  SDKs) is equally affected, and the fix is scoped to
+  `services/card-issuance/internal/grpcserver` wrapping that one error,
+  not to anything in this ADR's scope.
 - Every new RPC (e.g. a future `webhook-ingestion` or `card-issuance`
   split per section 1 / ADR 0004) must be added to `proto/` first; a REST
   endpoint or SDK method with no corresponding `.proto` RPC is a review

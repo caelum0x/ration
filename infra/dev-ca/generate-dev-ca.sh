@@ -39,7 +39,7 @@ mkdir -p "$OUT_DIR"
 # One identity per internal service that either serves or dials a gRPC
 # endpoint directly. Kept in sync with docs/SCALE-EXPANSION.md section 8
 # and the services this repo actually ships (see services/).
-SERVICES=(ledger-core gateway audit-log agent cli tui)
+SERVICES=(ledger-core gateway audit-log agent cli tui auth tenant-registry card-issuance webhook-ingestion)
 
 CA_KEY="$OUT_DIR/ca.key"
 CA_CERT="$OUT_DIR/ca.pem"

@@ -117,7 +117,7 @@ supposed to prevent for every DEBIT/HOLD by rejecting the entry (as
 seeing this, work the diagnosis in this order:
 
 1. **Confirm it's real, not a display artifact.** `bridge.Service.
-   RationBridgeFunding` (`services/gateway/internal/bridge/service.go`)
+   RationBridgeFunding` (`services/card-issuance/internal/bridge/service.go`)
    deliberately clamps negative headroom to zero before using it
    (`if headroom < 0 { snap.ReserveFloorBreached = true; headroom = 0
    }`) and reports that state as `reserve_floor_breached` in the
@@ -166,7 +166,7 @@ tenant with a genuinely late deposit, but every grant comes back
 `GrantedMinorUnits: 0` / `FullyGranted: false`.
 
 **This is very often correct behavior, not a bug** — `bridge.Service.
-RationBridgeFunding` (`services/gateway/internal/bridge/service.go`) has
+RationBridgeFunding` (`services/card-issuance/internal/bridge/service.go`) has
 exactly four reasons to decline, and it always says which one in the
 `Explanation` string it returns and records via `RecordAgentDecision`
 (`declineExplanation`'s four branches). Read the explanation string
@@ -190,7 +190,7 @@ first; it names the exact cause:
    against"`** despite the deposit genuinely being overdue — **this is a
    confirmed, real mismatch between two different definitions of
    "late," not a hypothetical.** `findRelevantLateDeposit`
-   (`services/gateway/internal/bridge/service.go`) filters strictly on
+   (`services/card-issuance/internal/bridge/service.go`) filters strictly on
    the deposit's stored `status` field: `if d.GetStatus() !=
    DepositStatus_DEPOSIT_STATUS_LATE { continue }`. But `ledger-core`'s
    `list_late` (`services/ledger-core/src/deposit.rs`) computes lateness
