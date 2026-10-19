@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 )
 
 // Airwallex signs webhook deliveries by HMAC-SHA256'ing the concatenation
@@ -30,9 +32,26 @@ var ErrInvalidSignature = errors.New("airwallex: invalid webhook signature")
 // without a configured webhook secret.
 var ErrMissingSecret = errors.New("airwallex: webhook secret not configured")
 
+// ErrStaleTimestamp is returned when a webhook's "x-timestamp" is further
+// from the verifier's clock than maxClockSkew allows — either a genuinely
+// stale/replayed delivery, or a delivery so far in the future it can't be
+// trusted either. See docs/THREAT-MODEL.md's "Elevation of privilege" row:
+// without this check, a captured, validly-signed webhook was replayable
+// indefinitely by anyone who recorded it.
+var ErrStaleTimestamp = errors.New("airwallex: webhook timestamp outside allowed clock skew")
+
+// maxClockSkew bounds how far a delivery's "x-timestamp" may drift from
+// this process's clock in either direction before it's rejected as stale,
+// matching Airwallex's own documented delivery tolerance.
+const maxClockSkew = 5 * time.Minute
+
+// now is overridable in tests; defaults to time.Now.
+var now = time.Now
+
 // VerifySignature re-derives the expected HMAC-SHA256 signature for
 // (timestamp + payload) under secret and compares it against signature
-// using a constant-time comparison.
+// using a constant-time comparison, then rejects the delivery if
+// timestamp is further than maxClockSkew from the current time.
 func VerifySignature(secret string, payload []byte, timestamp string, signature string) error {
 	if secret == "" {
 		return ErrMissingSecret
@@ -52,6 +71,15 @@ func VerifySignature(secret string, payload []byte, timestamp string, signature 
 	expectedBytes, _ := hex.DecodeString(expected)
 	if !hmac.Equal(sigBytes, expectedBytes) {
 		return ErrInvalidSignature
+	}
+
+	deliveredUnix, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return fmt.Errorf("%w: timestamp %q is not a valid unix time", ErrStaleTimestamp, timestamp)
+	}
+	skew := now().Sub(time.Unix(deliveredUnix, 0))
+	if skew > maxClockSkew || skew < -maxClockSkew {
+		return fmt.Errorf("%w: delivery timestamp is %s from now", ErrStaleTimestamp, skew)
 	}
 	return nil
 }

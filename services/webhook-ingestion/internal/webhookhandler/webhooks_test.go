@@ -7,14 +7,23 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	commonpb "github.com/caelum0x/ration/pkg/pb/common"
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
 	"github.com/caelum0x/ration/services/webhook-ingestion/internal/eventbus"
 )
+
+// freshTimestamp is a valid "x-timestamp" value as of the moment it's
+// called, so these HTTP-handler-level tests aren't rejected by
+// internal/airwallex's clock-skew check (see webhook.go's ErrStaleTimestamp).
+func freshTimestamp() string {
+	return fmt.Sprintf("%d", time.Now().Unix())
+}
 
 type fakeLedger struct {
 	deposits []*ledgerpb.Deposit
@@ -61,7 +70,7 @@ func TestHandleAirwallexWebhook_ValidTransactionCreated(t *testing.T) {
 			"occurred_at_unix":   1500,
 		},
 	})
-	timestamp := "1700000000"
+	timestamp := freshTimestamp()
 	sig := sign(secret, payload, timestamp)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/airwallex", bytes.NewReader(payload))
@@ -94,7 +103,7 @@ func TestHandleAirwallexWebhook_InvalidSignature(t *testing.T) {
 
 	payload := []byte(`{"id":"evt_1","name":"global_account.transaction.created","data":{}}`)
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/airwallex", bytes.NewReader(payload))
-	req.Header.Set("x-timestamp", "1700000000")
+	req.Header.Set("x-timestamp", freshTimestamp())
 	req.Header.Set("x-signature", "deadbeef")
 	rec := httptest.NewRecorder()
 
@@ -121,7 +130,7 @@ func TestHandleAirwallexWebhook_NoMatchingDepositIsNotAnError(t *testing.T) {
 			"amount_minor_units": 50000,
 		},
 	})
-	timestamp := "1700000000"
+	timestamp := freshTimestamp()
 	sig := sign(secret, payload, timestamp)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/airwallex", bytes.NewReader(payload))
@@ -141,7 +150,7 @@ func TestHandleAirwallexWebhook_UnhandledEventTypeReturnsOK(t *testing.T) {
 	h := NewHandler(secret, &fakeLedger{}, nil, nil)
 
 	payload := []byte(`{"id":"evt_1","name":"issuing.card.updated","data":{}}`)
-	timestamp := "1700000000"
+	timestamp := freshTimestamp()
 	sig := sign(secret, payload, timestamp)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/airwallex", bytes.NewReader(payload))

@@ -31,6 +31,7 @@ import (
 	"github.com/caelum0x/ration/services/webhook-ingestion/internal/eventbus"
 	"github.com/caelum0x/ration/services/webhook-ingestion/internal/grpcserver"
 	"github.com/caelum0x/ration/services/webhook-ingestion/internal/ledgerclient"
+	"github.com/caelum0x/ration/services/webhook-ingestion/internal/ratelimit"
 	"github.com/caelum0x/ration/services/webhook-ingestion/internal/webhookhandler"
 	"google.golang.org/grpc"
 )
@@ -118,9 +119,30 @@ func run(log *slog.Logger) error {
 
 	metricsSrv := met.Server(cfg.MetricsAddr)
 
+	// limiter sits in front of the entire plain-HTTP webhook listener,
+	// keyed per source IP (see internal/ratelimit), so a flood of
+	// (even validly-signed, replayed) webhook POSTs can't starve
+	// legitimate Airwallex deliveries before they even reach signature
+	// verification — docs/THREAT-MODEL.md's "Denial of service" row.
+	limiter := ratelimit.New(cfg.RateLimitRPS, cfg.RateLimitBurst)
+	sweepStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(cfg.RateLimitSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				limiter.Sweep(cfg.RateLimitSweepInterval * 3)
+			case <-sweepStop:
+				return
+			}
+		}
+	}()
+	defer close(sweepStop)
+
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           webhookHandler.Mux(),
+		Handler:           ratelimit.Middleware(limiter, webhookHandler.Mux()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

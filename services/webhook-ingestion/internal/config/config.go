@@ -8,6 +8,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/caelum0x/ration/pkg/mtls"
 )
@@ -28,6 +30,16 @@ type Config struct {
 	// by HMAC signature (internal/airwallex), not mTLS, matching how
 	// Airwallex itself delivers webhooks in production.
 	MTLS mtls.Config
+
+	// RateLimit* tunes the per-source-IP token bucket (see
+	// internal/ratelimit) in front of the plain HTTP webhook listener
+	// (docs/THREAT-MODEL.md's "Denial of service" row). Defaults are
+	// looser than gateway's per-tenant RATION_RATELIMIT_* defaults: a
+	// legitimate Airwallex webhook source can burst harder during a
+	// retry storm than a single tenant's own RPC traffic should.
+	RateLimitRPS           float64
+	RateLimitBurst         float64
+	RateLimitSweepInterval time.Duration
 }
 
 // Load reads configuration from the process environment and validates it.
@@ -50,6 +62,20 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	cfg.RateLimitRPS, err = getenvFloatDefault("WEBHOOK_INGESTION_RATELIMIT_RPS", 10)
+	if err != nil {
+		return nil, err
+	}
+	cfg.RateLimitBurst, err = getenvFloatDefault("WEBHOOK_INGESTION_RATELIMIT_BURST", 30)
+	if err != nil {
+		return nil, err
+	}
+	sweepMinutes, err := getenvInt64Default("WEBHOOK_INGESTION_RATELIMIT_SWEEP_INTERVAL_MINUTES", 10)
+	if err != nil {
+		return nil, err
+	}
+	cfg.RateLimitSweepInterval = time.Duration(sweepMinutes) * time.Minute
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -83,4 +109,28 @@ func getenvDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func getenvFloatDefault(key string, def float64) (float64, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0, fmt.Errorf("config: invalid %s=%q: %w", key, v, err)
+	}
+	return f, nil
+}
+
+func getenvInt64Default(key string, def int64) (int64, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	i, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("config: invalid %s=%q: %w", key, v, err)
+	}
+	return i, nil
 }
