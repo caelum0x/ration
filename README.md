@@ -12,6 +12,14 @@ integration, a Go agent loop that makes the actual rationing decisions
 (policy rules + an LLM for judgment calls), and a terminal UI for judges to
 watch it work live.
 
+**Engineering standard:** this is built to the bar of production fintech
+infrastructure, not hackathon scaffolding — real crash-safety (see the WAL
+recovery tests), a hard-rule money-safety invariant the LLM can never
+override, and a scale-out roadmap (service decomposition, observability,
+infra-as-code, formal verification, fuzzing/chaos testing — see
+[docs/SCALE-EXPANSION.md](docs/SCALE-EXPANSION.md)) aimed at unicorn-scale
+production use, not a weekend demo.
+
 ## Architecture
 
 ```

@@ -3,6 +3,7 @@ data/
 *.log
 .env
 .DS_Store
+.ration-demo.pid
 
 # Rust
 services/ledger-core/target/
