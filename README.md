@@ -1,4 +1,12 @@
-# Ration
+<div align="center">
+  <img src="assets/brand/logo.png" alt="Ration" width="120" />
+
+  # Ration
+
+  [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+  [![Go](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](services/gateway/go.mod)
+  [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](services/ledger-core/Cargo.toml)
+</div>
 
 Agentic multi-tenant spend controller for the Airwallex Agentic Banking
 Hackathon — **Starter Kit 5: Platform Spend Controller** (Multi-Tenant
@@ -78,3 +86,42 @@ that mirrors the real Issuing/Global Accounts/webhook contracts byte-for-byte
 so flipping to `AIRWALLEX_MODE=live` with real sandbox credentials is a
 one-line env change, not a rewrite. Sandbox platform access is pending
 organizer approval — see [docs/AIRWALLEX-SETUP.md](docs/AIRWALLEX-SETUP.md).
+
+## What integration actually found
+
+Six services were built independently against a pinned proto/architecture
+spec, then integrated. Integration is where real bugs show up — compile
+errors are the easy part. Three were found and fixed, not papered over:
+
+1. A proto-regeneration collision that silently shadowed checked-in
+   generated code.
+2. `ledger-core` and every client disagreeing on which env var carried the
+   listen address — the stack would never actually connect with default
+   config.
+3. The one that mattered: `MarkDepositReceived` updated deposit status but
+   never credited the ledger, so every tenant's balance was permanently
+   stuck at `0`. Reserve-floor headroom was always negative, so the
+   bridge-funding policy could only ever decline — the entire agentic
+   rationing feature, the actual point of this submission, could never
+   produce a real grant. Fixed at the ledger level with an idempotent
+   mark-and-credit in a single WAL frame, covered by new tests.
+
+The full, reproducible demo run (seed → simulate a late deposit → agent
+grants a partial bridge with a computed rationale → a second request
+correctly declines once the 24h velocity cap engages) is documented in
+[docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md). The submission writeup is in
+[docs/SUBMISSION.md](docs/SUBMISSION.md).
+
+## Contributing
+
+Each service is its own module with its own tests — run the relevant one
+(`go test ./...` in a Go service, `cargo test` in `ledger-core`, `make test`
+in `services/wal`) before opening a PR. Money-path changes (anything that
+touches `ledger-core::ledger` or `services/gateway/internal/bridge`) need a
+test that exercises the reserve-floor invariant — see
+[docs/AGENT-DESIGN.md](docs/AGENT-DESIGN.md) for the exact rules it must
+never violate.
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE).

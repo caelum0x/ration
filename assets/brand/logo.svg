@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Ration mark: two reserve bars bridged by an arc — the reserve floor on -->
+<!-- one side, a late deposit rationed across the gap on the other. -->
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <rect width="256" height="256" rx="48" fill="#0B0C0E"/>
+  <!-- left bar: full reserve -->
+  <rect x="48" y="96" width="36" height="96" rx="8" fill="#FFFFFF"/>
+  <!-- right bar: rationed (partial) -->
+  <rect x="172" y="128" width="36" height="64" rx="8" fill="#FFFFFF" opacity="0.4"/>
+  <rect x="172" y="160" width="36" height="32" rx="8" fill="#FFFFFF"/>
+  <!-- bridging arc -->
+  <path d="M90 108 Q128 60 166 108" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" fill="none" opacity="0.7"/>
+</svg>
