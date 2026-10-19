@@ -1,0 +1,52 @@
+# Prometheus scrape config for Ration's local observability stack —
+# docs/SCALE-EXPANSION.md section 2.
+#
+# Scrapes every Go service's own /metrics endpoint (pkg/metrics) directly
+# — metrics never flow through infra/otel-collector (that collector only
+# carries traces; see its config.yaml's top comment). Target hostnames
+# match docker-compose.yml's service names; when running outside
+# docker-compose (e.g. `prometheus --config.file=...` on a dev laptop
+# with every service started via `make run-*`), replace each target with
+# "localhost:<port>" instead.
+#
+# ledger-core (Rust) is deliberately absent from scrape_configs below:
+# it has no Prometheus /metrics endpoint yet (tracing is wired — see
+# services/ledger-core/src/telemetry.rs — metrics are not; the exact,
+# precise gap is documented in docs/SLO.md's "ledger-core" section).
+# Adding a scrape target for a port nothing listens on would just show
+# as permanently "down" in Prometheus with no diagnostic value; add the
+# target here the same day that gap closes.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # The collector's own health/throughput metrics (spans received,
+  # dropped, queue depth) — standard practice for any OTel deployment,
+  # and the fastest way to tell "is the collector itself healthy" apart
+  # from "is a service failing to export".
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]
+
+  - job_name: gateway
+    static_configs:
+      - targets: ["gateway:9091"]
+
+  - job_name: audit-log
+    static_configs:
+      - targets: ["audit-log:9092"]
+
+  - job_name: agent
+    static_configs:
+      - targets: ["agent:9093"]
+
+  # tui runs behind docker-compose.yml's "tools" profile (an interactive
+  # operator tool, not a standing service) — this target is intentionally
+  # present so tui's metrics are scraped whenever it IS running
+  # (`docker compose run --rm tui`), and shows as "down" the rest of the
+  # time, which is the correct, expected state for an on-demand tool.
+  - job_name: tui
+    static_configs:
+      - targets: ["tui:9094"]

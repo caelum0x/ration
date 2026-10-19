@@ -1,0 +1,23 @@
+# Grafana datasource provisioning for Ration's local observability stack
+# — docs/SCALE-EXPANSION.md section 2. Grafana auto-loads every file in
+# this directory on startup (mounted at
+# /etc/grafana/provisioning/datasources in docker-compose.yml), so both
+# datasources below exist with zero manual "Add data source" clicking.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+
+  - name: Jaeger
+    type: jaeger
+    uid: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: true

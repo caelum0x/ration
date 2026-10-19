@@ -12,16 +12,37 @@ name = "ledger_core"
 path = "src/lib.rs"
 
 [dependencies]
-tonic = "0.12"
+# "tls" pulls in rustls so tonic::transport::{Identity, Certificate,
+# ServerTlsConfig, ClientTlsConfig} are available — used by src/mtls.rs
+# for mTLS between ledger-core and the other internal services (see
+# docs/SCALE-EXPANSION.md section 8, pkg/mtls for the Go-side
+# equivalent, infra/dev-ca/ for the dev CA that issues the certs).
+tonic = { version = "0.12", features = ["tls"] }
 prost = "0.13"
 tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+opentelemetry = "0.33.1"
+opentelemetry_sdk = "0.33.1"
+# default-features = false + an explicit "grpc-tonic" exporter transport
+# keeps this off the reqwest/http-exporter path entirely (which would
+# otherwise drag in reqwest, url, idna, and the full ICU/unicode data
+# tables transitively just to ship spans over OTLP) — ledger-core only
+# ever exports traces over gRPC to the local otel-collector
+# (infra/otel-collector), so the tonic transport is all that's needed.
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "grpc-tonic"] }
+tracing-opentelemetry = "0.34.0"
+tonic-tracing-opentelemetry = "0.42.1"
+# Needed directly (not just transitively via tonic/tonic-tracing-opentelemetry)
+# for src/telemetry.rs's TracedService, which implements tower::{Layer,Service}
+# and references http::{Request,Response} by name.
+http = "1"
+tower = "0.4"
 
 [build-dependencies]
 cc = "1"
@@ -30,3 +51,7 @@ tonic-build = "0.12"
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
+proptest = "1"
+tonic-health = "0.12"
+rcgen = "0.13"
+tokio-stream = "0.1"

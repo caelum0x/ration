@@ -62,9 +62,9 @@ impl From<LedgerError> for tonic::Status {
                 tonic::Status::failed_precondition(e.to_string())
             }
 
-            LedgerError::Money(_) | LedgerError::InvalidArgument(_) | LedgerError::IdempotencyKeyRequired => {
-                tonic::Status::invalid_argument(e.to_string())
-            }
+            LedgerError::Money(_)
+            | LedgerError::InvalidArgument(_)
+            | LedgerError::IdempotencyKeyRequired => tonic::Status::invalid_argument(e.to_string()),
 
             LedgerError::Storage(_) | LedgerError::Wal(_) => tonic::Status::internal(e.to_string()),
         }

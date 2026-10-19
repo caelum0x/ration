@@ -1,0 +1,150 @@
+{
+  "title": "Ration overview",
+  "description": "Auto-provisioned (infra/grafana/provisioning/dashboards) — every query below is a real PromQL expression against the metric names pkg/metrics actually registers (pkg/metrics/metrics.go), scraped per infra/prometheus/prometheus.yml. See docs/SLO.md for the latency/availability targets each panel should be read against.",
+  "editable": true,
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "10s",
+  "tags": ["ration", "scale-expansion-section-2"],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(ration_grpc_server_requests_total, service)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "gRPC request rate by method",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(ration_grpc_server_requests_total{service=~\"$service\"}[5m])) by (service, method)",
+          "legendFormat": "{{service}} · {{method}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "title": "gRPC error rate by code (non-OK)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(ration_grpc_server_requests_total{service=~\"$service\", code!=\"OK\"}[5m])) by (service, method, code)",
+          "legendFormat": "{{service}} · {{method}} · {{code}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "title": "gRPC p99 latency by method",
+      "type": "timeseries",
+      "description": "Compare against docs/SLO.md's per-RPC p99 targets.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(ration_grpc_server_request_duration_seconds_bucket{service=~\"$service\"}[5m])) by (le, service, method))",
+          "legendFormat": "{{service}} · {{method}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "title": "gRPC p50 latency by method",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(ration_grpc_server_request_duration_seconds_bucket{service=~\"$service\"}[5m])) by (le, service, method))",
+          "legendFormat": "{{service}} · {{method}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 5,
+      "title": "Bridge funding grants by result",
+      "type": "timeseries",
+      "description": "ration_bridge_grants_total{result} — granted vs partial vs declined, from services/gateway/internal/bridge's policy decisions.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(ration_bridge_grants_total[5m])) by (result)",
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 6,
+      "title": "Reserve floor headroom by tenant (minor units)",
+      "type": "timeseries",
+      "description": "ration_reserve_floor_headroom_minor_units{tenant_id} — a sustained drop toward 0 across tenants is the leading indicator for RUNBOOK.md's \"a tenant's reserve floor shows negative headroom\" incident.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "ration_reserve_floor_headroom_minor_units",
+          "legendFormat": "tenant {{tenant_id}} ({{service}})"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] }
+    },
+    {
+      "id": 7,
+      "title": "Process health — goroutines",
+      "type": "timeseries",
+      "description": "go_goroutines, from each service's prometheus.NewGoCollector() registration (pkg/metrics.New) — a steady climb with no plateau is a goroutine leak.",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "go_goroutines{service=~\"$service\"}",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 8,
+      "title": "Process health — resident memory",
+      "type": "timeseries",
+      "description": "process_resident_memory_bytes, from prometheus.NewProcessCollector (pkg/metrics.New).",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "process_resident_memory_bytes{service=~\"$service\"}",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] }
+    }
+  ]
+}

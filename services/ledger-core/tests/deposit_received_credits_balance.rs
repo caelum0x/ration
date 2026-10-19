@@ -29,10 +29,17 @@ fn new_ledger(tag: &str) -> Ledger {
 #[test]
 fn marking_a_deposit_received_credits_the_tenants_available_balance() {
     let ledger = new_ledger("credits-balance");
-    let tenant = ledger.create_tenant("Acme".into(), "USD".into(), 200).unwrap();
+    let tenant = ledger
+        .create_tenant("Acme".into(), "USD".into(), 200)
+        .unwrap();
 
     let deposit = ledger
-        .record_deposit(tenant.id.clone(), Money::new(5_000, "USD").unwrap(), 1_000, "ext-1".into())
+        .record_deposit(
+            tenant.id.clone(),
+            Money::new(5_000, "USD").unwrap(),
+            1_000,
+            "ext-1".into(),
+        )
         .unwrap();
 
     let (balance_before, _) = ledger.get_balance(&tenant.id).unwrap();
@@ -53,10 +60,17 @@ fn marking_a_deposit_received_credits_the_tenants_available_balance() {
 #[test]
 fn marking_the_same_deposit_received_twice_does_not_double_credit() {
     let ledger = new_ledger("no-double-credit");
-    let tenant = ledger.create_tenant("Acme".into(), "USD".into(), 0).unwrap();
+    let tenant = ledger
+        .create_tenant("Acme".into(), "USD".into(), 0)
+        .unwrap();
 
     let deposit = ledger
-        .record_deposit(tenant.id.clone(), Money::new(1_000, "USD").unwrap(), 500, "ext-1".into())
+        .record_deposit(
+            tenant.id.clone(),
+            Money::new(1_000, "USD").unwrap(),
+            500,
+            "ext-1".into(),
+        )
         .unwrap();
 
     ledger
@@ -80,10 +94,17 @@ fn a_credited_deposit_makes_the_reserve_floor_envelope_math_non_zero() {
     // negative), so the agent's bridge envelope can never grant
     // anything, no matter how the late deposit itself is sized.
     let ledger = new_ledger("unblocks-headroom");
-    let tenant = ledger.create_tenant("Acme".into(), "USD".into(), 1_000).unwrap();
+    let tenant = ledger
+        .create_tenant("Acme".into(), "USD".into(), 1_000)
+        .unwrap();
 
     let deposit = ledger
-        .record_deposit(tenant.id.clone(), Money::new(10_000, "USD").unwrap(), 500, "ext-1".into())
+        .record_deposit(
+            tenant.id.clone(),
+            Money::new(10_000, "USD").unwrap(),
+            500,
+            "ext-1".into(),
+        )
         .unwrap();
     ledger
         .mark_deposit_received(deposit.id.clone(), 600, "txn-1".into())
@@ -91,5 +112,8 @@ fn a_credited_deposit_makes_the_reserve_floor_envelope_math_non_zero() {
 
     let (allowed, headroom) = ledger.check_reserve_floor(&tenant.id, 0).unwrap();
     assert!(allowed);
-    assert_eq!(headroom, 9_000, "headroom = available (10,000) - reserve_floor (1,000)");
+    assert_eq!(
+        headroom, 9_000,
+        "headroom = available (10,000) - reserve_floor (1,000)"
+    );
 }

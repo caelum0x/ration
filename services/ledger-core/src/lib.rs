@@ -7,10 +7,13 @@
 //! SQLite is a rebuildable, queryable index over it.
 
 pub mod agent_decision;
+pub mod audit_mirror;
 pub mod deposit;
 pub mod error;
 pub mod ledger;
 pub mod money;
+pub mod mtls;
+pub mod telemetry;
 pub mod tenant;
 pub mod wal_ffi;
 
@@ -34,6 +37,14 @@ pub mod pb {
         pub mod gateway {
             pub mod v1 {
                 tonic::include_proto!("ration.gateway.v1");
+            }
+        }
+        // audit.proto is compiled separately (client stubs only — see
+        // build.rs) from the rest of this family, but nests under the
+        // same `ration::<package>::v1` convention for consistency.
+        pub mod audit {
+            pub mod v1 {
+                tonic::include_proto!("ration.audit.v1");
             }
         }
     }

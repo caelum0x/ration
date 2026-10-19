@@ -53,6 +53,68 @@ gateway independently re-validates it against the same rules before
 touching the ledger — a model that ignores the instruction still can't
 move money past the floor.
 
+## LLM transport: direct Anthropic vs. Railyard Relay gateway
+
+`services/agent/internal/llm` can send every model call either directly to
+the Anthropic Messages API (the original path) or through Railyard's Relay
+gateway (a sibling product, `~/products/railyard/apps/relay` — a maintained
+fork of TensorZero with opt-in success-only Mint billing and per-key spend
+caps via its Abacus/budget feature). Routing through Relay is what makes
+per-call cost metering and a hard monthly/per-key spend cap on the agent's
+own LLM usage possible — today every `RunConversation` call goes straight to
+Anthropic with no spend visibility or cap of its own; Relay's budgets
+feature (`docs` in the Railyard repo) would stop a runaway agent loop with a
+`429` before the provider is even called, independently of the hard
+rationing rules above (which govern money Ration moves, not Ration's own
+LLM bill).
+
+**What's actually wired (`services/agent/internal/llm/provider.go`,
+`gateway.go`):**
+
+- `RATION_LLM_GATEWAY_URL` (env var, read in `NewAnthropicProviderFromEnv`):
+  when set, `createMessage` dispatches to `createMessageViaGateway`, which
+  translates the Anthropic Messages wire shape (content-block arrays,
+  `tool_use`/`tool_result` blocks, the top-level `system` field) to and from
+  Relay's client-facing OpenAI-compatible `chat.completions` shape and POSTs
+  to `<RATION_LLM_GATEWAY_URL>/chat/completions`. Confirmed against
+  `apps/relay/README.md`'s quickstart (`POST
+  http://localhost:3000/openai/v1/chat/completions`) and
+  `apps/relay/examples/relay/openai-client/README.md` — not guessed.
+- `RATION_LLM_GATEWAY_MODEL`: the Relay/TensorZero model or function
+  selector (e.g. `tensorzero::function_name::chat`), sent as the request's
+  `model` field. Falls back to `RATION_AGENT_MODEL` if unset.
+- `RATION_LLM_GATEWAY_API_KEY`: sent as `Authorization: Bearer <value>`,
+  matching Relay's OpenAI-SDK-style auth (confirmed from
+  `apps/relay/docs/gateway/configuration-reference.mdx`).
+- Leaving `RATION_LLM_GATEWAY_URL` unset preserves the exact original
+  direct-to-Anthropic behavior — `createMessage` falls back to
+  `createMessageDirect` with zero change to request/response handling,
+  retry/backoff (`sendWithRetry`, shared by both transports), or the
+  tool-calling loop in `RunConversation`. The gateway is purely a transport
+  swap underneath that loop, not a rewrite of it.
+- `go test ./services/agent/...` covers both transports: translation
+  (`gateway_test.go`), dispatch/fallback and the retry path
+  (`provider_test.go`), and a full tool-call round trip through a fake
+  Relay server.
+
+**What's a documented TODO, not silently skipped:**
+
+- There is no confirmed-reachable, owner-provided production Relay URL from
+  this environment, so `RATION_LLM_GATEWAY_URL` has no non-empty default —
+  an operator must point it at their own running Relay deployment (local
+  quickstart or production `apps/relay/config/tensorzero.toml`).
+- Relay's budget/metering features (Mint billing, per-key spend caps via
+  Abacus) are opt-in server-side configuration on the Relay deployment
+  itself (`RELAY_BILLING_ENABLED=1` plus `MINT_*` env vars, per
+  `apps/relay/README.md`). Routing the agent through Relay makes enforcing
+  a cap *possible*; it does not provision one. No cap is enforced today
+  regardless of which transport is used.
+- The `RATION_LLM_GATEWAY_MODEL` → Relay model/function mapping is only
+  meaningful against whatever `tensorzero.toml` the operator's Relay
+  instance actually serves; this package has no way to introspect or
+  validate that mapping, so a misconfigured selector fails at request time
+  with Relay's own error, not a local check.
+
 ## Audit trail
 
 Every decision — hard-rule computation and LLM tool call — is written via

@@ -1,0 +1,251 @@
+# One-command local multi-service dev stack — see
+# docs/SCALE-EXPANSION.md section 3.
+#
+#   docker compose up --build
+#
+# Brings up the four deployable services (ledger-core, gateway, agent,
+# audit-log) wired together exactly like infra/terraform/envs/dev wires
+# them in AWS: ledger-core is the single-writer ledger, gateway fronts
+# it in AIRWALLEX_MODE=mock (no real Airwallex credentials needed),
+# agent polls both, and audit-log is up as a standing service that
+# ledger-core actually mirrors into — see
+# services/ledger-core/src/audit_mirror.rs, docs/SCALE-EXPANSION.md
+# section 8. gateway's own AUDIT_LOG_ADDR below is set but inert (see
+# infra/terraform/README.md): ApplyEntry/RecordAgentDecision are both
+# ledger-core RPCs, so every call gateway makes to them is already
+# mirrored once, centrally, by ledger-core.
+#
+# services/tui and services/cli are interactive operator tools, not
+# long-running services (same reasoning as infra/terraform/envs/*/main.tf
+# and each of their own Dockerfiles) — they're defined below behind the
+# "tools" profile so `docker compose up` never starts them, and you run
+# them on demand against the rest of the stack instead:
+#
+#   docker compose run --rm cli seed
+#   docker compose run --rm tui
+#
+# Observability stack (docs/SCALE-EXPANSION.md section 2) is wired in at
+# the bottom of `services:` below: otel-collector receives every
+# service's OTLP/gRPC traces (OTEL_EXPORTER_OTLP_ENDPOINT, set on every
+# service below, points at it) and forwards them to jaeger; prometheus
+# scrapes each Go service's own /metrics endpoint directly per
+# infra/prometheus/prometheus.yml (metrics never flow through
+# otel-collector); grafana is provisioned (infra/grafana/provisioning)
+# with both as datasources plus a starter dashboard
+# (infra/grafana/dashboards/ration-overview.json). None of this is a
+# hard dependency for the four app services — every exporter is
+# fail-open (see pkg/telemetry's and
+# services/ledger-core/src/telemetry.rs's doc comments): if you comment
+# out the observability services below, the rest of the stack still
+# starts and serves traffic exactly as before, just without traces/
+# dashboards.
+#
+#   open http://localhost:3000   (Grafana, admin/admin)
+#   open http://localhost:16686  (Jaeger UI)
+#   open http://localhost:9090   (Prometheus)
+#
+# ledger-core (Rust) exports traces here but has no /metrics endpoint
+# yet — a real, precisely-scoped gap, not an oversight; see docs/SLO.md's
+# "ledger-core" section for the exact TODO.
+#
+# mTLS between services (pkg/mtls, infra/dev-ca/) is OFF by default here
+# (every *_MTLS_ENABLED var below is unset/false, matching .env.example) —
+# run infra/dev-ca/generate-dev-ca.sh, mount the generated certs into
+# each service, and set the *_MTLS_* vars to turn it on for this stack.
+
+services:
+  ledger-core:
+    build:
+      context: .
+      dockerfile: services/ledger-core/Dockerfile
+    image: ration/ledger-core:local
+    restart: unless-stopped
+    depends_on:
+      - otel-collector
+      - audit-log
+    ports:
+      - "7001:7001"
+    environment:
+      LEDGER_CORE_ADDR: "0.0.0.0:7001"
+      RATION_LEDGER_WAL_PATH: "/data/ledger.wal"
+      RATION_LEDGER_DB_PATH: "/data/ledger.db"
+      RUST_LOG: "info"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      # ledger-core mirrors every ApplyEntry/RecordAgentDecision
+      # outcome here, best-effort and async — see
+      # services/ledger-core/src/audit_mirror.rs,
+      # docs/SCALE-EXPANSION.md section 8.
+      AUDIT_LOG_ADDR: "audit-log:7003"
+    volumes:
+      - ledger_core_data:/data
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    image: ration/gateway:local
+    restart: unless-stopped
+    depends_on:
+      - ledger-core
+      - otel-collector
+    ports:
+      - "7002:7002"
+      - "8080:8080"
+      - "9091:9091"
+    environment:
+      AIRWALLEX_MODE: "mock"
+      AIRWALLEX_BASE_URL: "https://api-demo.airwallex.com"
+      LEDGER_CORE_ADDR: "ledger-core:7001"
+      GATEWAY_GRPC_ADDR: "0.0.0.0:7002"
+      GATEWAY_HTTP_ADDR: "0.0.0.0:8080"
+      GATEWAY_METRICS_ADDR: "0.0.0.0:9091"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      RATION_DATA_DIR: "/data"
+      RATION_BRIDGE_MAX_FRACTION: "0.6"
+      RATION_BRIDGE_MIN_GRANT_MINOR_UNITS: "500"
+      RATION_BRIDGE_VELOCITY_WINDOW_HOURS: "24"
+      RATION_RATELIMIT_RPS: "20"
+      RATION_RATELIMIT_BURST: "40"
+      RATION_RATELIMIT_SWEEP_INTERVAL_MINUTES: "10"
+      # Deliberately inert (see docker-compose.yml's top comment /
+      # infra/terraform/README.md): ApplyEntry/RecordAgentDecision are
+      # both ledger-core RPCs, so every call gateway makes to them is
+      # already mirrored once, centrally, by ledger-core's own
+      # audit_mirror. Set anyway for the day gateway needs a direct
+      # audit-log client of its own.
+      AUDIT_LOG_ADDR: "audit-log:7003"
+    volumes:
+      - gateway_data:/data
+
+  agent:
+    build:
+      context: .
+      dockerfile: services/agent/Dockerfile
+    image: ration/agent:local
+    restart: unless-stopped
+    depends_on:
+      - ledger-core
+      - gateway
+      - otel-collector
+    ports:
+      - "9093:9093"
+    environment:
+      LEDGER_CORE_ADDR: "ledger-core:7001"
+      GATEWAY_GRPC_ADDR: "gateway:7002"
+      RATION_AGENT_METRICS_ADDR: "0.0.0.0:9093"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      RATION_AGENT_POLL_INTERVAL_SECONDS: "10"
+      RATION_AGENT_MODEL: "${RATION_AGENT_MODEL:-claude-sonnet-5}"
+      # Without this, the agent starts and logs a warning (see
+      # services/agent/cmd/agent/main.go) but every LLM call it makes
+      # fails. Set it in a .env file next to this docker-compose.yml
+      # (docker compose reads .env automatically) or export it in your
+      # shell before `docker compose up` — never commit a real key here.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+
+  audit-log:
+    build:
+      context: .
+      dockerfile: services/audit-log/Dockerfile
+    image: ration/audit-log:local
+    restart: unless-stopped
+    depends_on:
+      - otel-collector
+    ports:
+      - "7003:7003"
+      - "9092:9092"
+    environment:
+      AUDIT_LOG_GRPC_ADDR: "0.0.0.0:7003"
+      AUDIT_LOG_METRICS_ADDR: "0.0.0.0:9092"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      RATION_AUDIT_LOG_DATA_DIR: "/data"
+    volumes:
+      - audit_log_data:/data
+
+  # --- interactive operator tools (never started by `docker compose up`) ---
+
+  cli:
+    build:
+      context: .
+      dockerfile: services/cli/Dockerfile
+    image: ration/cli:local
+    profiles: ["tools"]
+    depends_on:
+      - ledger-core
+      - gateway
+    environment:
+      LEDGER_CORE_ADDR: "ledger-core:7001"
+      GATEWAY_GRPC_ADDR: "gateway:7002"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+
+  tui:
+    build:
+      context: .
+      dockerfile: services/tui/Dockerfile
+    image: ration/tui:local
+    profiles: ["tools"]
+    depends_on:
+      - ledger-core
+      - gateway
+    stdin_open: true
+    tty: true
+    environment:
+      LEDGER_CORE_ADDR: "ledger-core:7001"
+      GATEWAY_GRPC_ADDR: "gateway:7002"
+      RATION_TUI_METRICS_ADDR: "0.0.0.0:9094"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+
+  # --- observability stack (docs/SCALE-EXPANSION.md section 2) ---
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel-collector/config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC — every service's trace exporter targets this
+      - "4318:4318" # OTLP HTTP
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # Jaeger UI
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - jaeger
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+
+volumes:
+  ledger_core_data:
+  gateway_data:
+  audit_log_data:
+  prometheus_data:
+  grafana_data:

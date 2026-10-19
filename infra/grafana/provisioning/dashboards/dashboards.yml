@@ -1,0 +1,18 @@
+# Grafana dashboard provider for Ration's local observability stack —
+# docs/SCALE-EXPANSION.md section 2. Points Grafana at
+# infra/grafana/dashboards/*.json (mounted at
+# /var/lib/grafana/dashboards in docker-compose.yml) so every dashboard
+# there loads automatically on startup, with zero manual import.
+
+apiVersion: 1
+
+providers:
+  - name: ration
+    orgId: 1
+    folder: Ration
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

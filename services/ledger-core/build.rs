@@ -21,8 +21,14 @@ fn main() {
     println!("cargo:rerun-if-changed={}", wal_c.display());
     println!("cargo:rerun-if-changed={}", crc32_c.display());
     println!("cargo:rerun-if-changed={}", wal_dir.join("wal.h").display());
-    println!("cargo:rerun-if-changed={}", wal_dir.join("frame.h").display());
-    println!("cargo:rerun-if-changed={}", wal_dir.join("crc32.h").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        wal_dir.join("frame.h").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        wal_dir.join("crc32.h").display()
+    );
 
     // --- Compile proto/*.proto with tonic-build. ledger-core only serves
     // the LedgerCore service, but we compile every proto in the shared
@@ -43,9 +49,33 @@ fn main() {
         println!("cargo:rerun-if-changed={}", proto_file.display());
     }
 
+    // audit.proto is compiled in its own pass with client stubs on top
+    // of the usual server stubs: ledger-core is a *client* of AuditLog
+    // in production (see docs/SCALE-EXPANSION.md section 8,
+    // src/audit_mirror.rs) and never runs an AuditLog server, but
+    // src/audit_mirror.rs's own test suite stands up a fake AuditLog
+    // server (implementing the generated server trait) to exercise
+    // the client against — so both sides are generated here, unlike
+    // every other proto file below, which only ever needs server
+    // stubs for the service(s) ledger-core actually implements.
+    let audit_proto = proto_dir.join("audit.proto");
+    let (audit_protos, server_only_protos): (Vec<PathBuf>, Vec<PathBuf>) =
+        proto_files.into_iter().partition(|p| p == &audit_proto);
+    assert!(
+        !audit_protos.is_empty(),
+        "expected {} to exist alongside the other proto/*.proto files",
+        audit_proto.display()
+    );
+
     tonic_build::configure()
         .build_server(true)
         .build_client(false)
-        .compile_protos(&proto_files, &[proto_dir])
-        .expect("failed to compile proto/*.proto with tonic-build");
+        .compile_protos(&server_only_protos, std::slice::from_ref(&proto_dir))
+        .expect("failed to compile proto/*.proto (server-only stubs) with tonic-build");
+
+    tonic_build::configure()
+        .build_server(true)
+        .build_client(true)
+        .compile_protos(&audit_protos, &[proto_dir])
+        .expect("failed to compile proto/audit.proto (client+server stubs) with tonic-build");
 }

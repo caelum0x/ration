@@ -55,13 +55,34 @@ fn crash_mid_write_loses_nothing_and_double_applies_nothing_on_restart() {
             .unwrap();
 
         ledger
-            .apply_entry(tenant.id.clone(), LedgerEntryType::Credit, Money::new(10_000, "USD").unwrap(), "seed".into(), "evt-1".into(), "".into())
+            .apply_entry(
+                tenant.id.clone(),
+                LedgerEntryType::Credit,
+                Money::new(10_000, "USD").unwrap(),
+                "seed".into(),
+                "evt-1".into(),
+                "".into(),
+            )
             .unwrap();
         ledger
-            .apply_entry(tenant.id.clone(), LedgerEntryType::Debit, Money::new(2_000, "USD").unwrap(), "spend".into(), "evt-2".into(), "".into())
+            .apply_entry(
+                tenant.id.clone(),
+                LedgerEntryType::Debit,
+                Money::new(2_000, "USD").unwrap(),
+                "spend".into(),
+                "evt-2".into(),
+                "".into(),
+            )
             .unwrap();
         ledger
-            .apply_entry(tenant.id.clone(), LedgerEntryType::Hold, Money::new(1_500, "USD").unwrap(), "hold".into(), "evt-3".into(), "".into())
+            .apply_entry(
+                tenant.id.clone(),
+                LedgerEntryType::Hold,
+                Money::new(1_500, "USD").unwrap(),
+                "hold".into(),
+                "evt-3".into(),
+                "".into(),
+            )
             .unwrap();
 
         let (balance, _) = ledger.get_balance(&tenant.id).unwrap();
@@ -96,15 +117,29 @@ fn crash_mid_write_loses_nothing_and_double_applies_nothing_on_restart() {
         10_000 - 2_000 - 1_500,
         "no entry lost after recovery"
     );
-    assert_eq!(balance.held_minor_units, 1_500, "no entry lost after recovery");
+    assert_eq!(
+        balance.held_minor_units, 1_500,
+        "no entry lost after recovery"
+    );
 
     let (entries, _) = ledger.list_entries(&tenant_id, 100, "").unwrap();
-    assert_eq!(entries.len(), 3, "no entry lost and none double-applied after recovery");
+    assert_eq!(
+        entries.len(),
+        3,
+        "no entry lost and none double-applied after recovery"
+    );
 
     // --- Phase 4: the WAL must still be appendable after recovery
     // truncated the torn tail — prove it by applying one more entry.
     let outcome = ledger
-        .apply_entry(tenant_id.clone(), LedgerEntryType::Release, Money::new(500, "USD").unwrap(), "partial-release".into(), "evt-4".into(), "".into())
+        .apply_entry(
+            tenant_id.clone(),
+            LedgerEntryType::Release,
+            Money::new(500, "USD").unwrap(),
+            "partial-release".into(),
+            "evt-4".into(),
+            "".into(),
+        )
         .unwrap();
     match outcome {
         ApplyOutcome::Applied { balance, .. } => {
@@ -119,14 +154,21 @@ fn crash_mid_write_loses_nothing_and_double_applies_nothing_on_restart() {
     // replaying an *already fully-indexed* WAL does not double-apply
     // anything either: the balance must be byte-for-byte identical.
     let (ledger2, replayed2) = Ledger::open(&wal_path, &db_path).unwrap();
-    assert_eq!(replayed2, 5, "all 5 good frames (including the post-recovery append) replay");
+    assert_eq!(
+        replayed2, 5,
+        "all 5 good frames (including the post-recovery append) replay"
+    );
 
     let (balance2, _) = ledger2.get_balance(&tenant_id).unwrap();
     assert_eq!(balance2.available_minor_units, 10_000 - 2_000 - 1_500 + 500);
     assert_eq!(balance2.held_minor_units, 1_000);
 
     let (entries2, _) = ledger2.list_entries(&tenant_id, 100, "").unwrap();
-    assert_eq!(entries2.len(), 4, "still exactly 4 entries — nothing double-applied across two restarts");
+    assert_eq!(
+        entries2.len(),
+        4,
+        "still exactly 4 entries — nothing double-applied across two restarts"
+    );
 }
 
 #[test]
@@ -135,9 +177,18 @@ fn recover_on_a_wal_with_no_torn_tail_is_a_pure_pass_through() {
 
     let tenant_id = {
         let (ledger, _) = Ledger::open(&wal_path, &db_path).unwrap();
-        let tenant = ledger.create_tenant("Beta".into(), "USD".into(), 0).unwrap();
+        let tenant = ledger
+            .create_tenant("Beta".into(), "USD".into(), 0)
+            .unwrap();
         ledger
-            .apply_entry(tenant.id.clone(), LedgerEntryType::Credit, Money::new(300, "USD").unwrap(), "seed".into(), "evt-1".into(), "".into())
+            .apply_entry(
+                tenant.id.clone(),
+                LedgerEntryType::Credit,
+                Money::new(300, "USD").unwrap(),
+                "seed".into(),
+                "evt-1".into(),
+                "".into(),
+            )
             .unwrap();
         tenant.id
     };

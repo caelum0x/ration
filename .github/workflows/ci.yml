@@ -1,0 +1,159 @@
+name: CI
+
+# Standing rule (docs/SCALE-EXPANSION.md): production-fintech bar. No step
+# in this workflow is allowed to "soft pass" (continue-on-error, || true,
+# etc.) on a real check — a red job here means real lint/test/vuln debt
+# that needs fixing in the code, not in this file.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in sync with the version verified locally when this workflow was
+  # authored (`golangci-lint version` -> 2.15.0 built with go1.27.2).
+  GOLANGCI_LINT_VERSION: v2.15.0
+
+jobs:
+  # --- C: services/wal under AddressSanitizer + UndefinedBehaviorSanitizer ---
+  c-wal:
+    name: C (wal, ASan+UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build + test libwal under ASan/UBSan
+        working-directory: services/wal
+        env:
+          CC: clang
+          # -O0 keeps ASan stack traces precise; sanitizers alone are the
+          # point of this job, optimization is not.
+          CFLAGS: >-
+            -std=c11 -Wall -Wextra -O0 -g -D_FILE_OFFSET_BITS=64
+            -fsanitize=address,undefined -fno-omit-frame-pointer
+        run: |
+          make clean
+          make test
+        # ASan/UBSan abort the process (and make's recipe) with a nonzero
+        # exit code on any detected memory-safety or UB finding, so a
+        # finding here fails the job with no extra wiring required.
+
+  # --- Rust: ledger-core ---
+  rust-ledger-core:
+    name: Rust (ledger-core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc (ledger-core's build.rs runs tonic-build at compile time)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: services/ledger-core
+
+      - name: cargo test
+        working-directory: services/ledger-core
+        run: cargo test --all-targets
+
+      - name: cargo clippy -D warnings
+        working-directory: services/ledger-core
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo audit
+        working-directory: services/ledger-core
+        run: cargo audit
+
+  # --- Go: discover every go.mod in the repo so new services (e.g. the
+  # auth/tenant-registry/card-issuance/webhook-ingestion split in
+  # SCALE-EXPANSION.md section 1) are picked up without editing this file. ---
+  go-discover:
+    name: Discover Go modules
+    runs-on: ubuntu-latest
+    outputs:
+      modules: ${{ steps.find.outputs.modules }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: find
+        name: Find go.mod directories
+        run: |
+          mods=$(find . -name go.mod -not -path './.git/*' -print0 \
+            | xargs -0 -n1 dirname | sed 's#^\./##' | sort \
+            | jq -R -s -c 'split("\n")[:-1]')
+          echo "modules=$mods" >> "$GITHUB_OUTPUT"
+          echo "Discovered Go modules: $mods"
+
+  go:
+    name: Go (${{ matrix.module }})
+    needs: go-discover
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJson(needs.go-discover.outputs.modules) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: go build
+        working-directory: ${{ matrix.module }}
+        run: go build ./...
+
+      - name: go vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+      - name: go test
+        working-directory: ${{ matrix.module }}
+        run: go test ./... -race -count=1
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          working-directory: ${{ matrix.module }}
+          args: --timeout=5m
+
+  # --- proto: lint proto/*.proto ---
+  proto-lint:
+    name: Proto lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # SCALE-EXPANSION.md section 4 says "buf lint if available, else
+      # protoc --fatal_warnings". This repo has no buf.yaml/buf.lock yet
+      # and `buf` could not be installed/verified in the environment this
+      # workflow was authored in (Homebrew's buf formula needs newer Xcode
+      # Command Line Tools than were available; `go install
+      # github.com/bufbuild/buf/cmd/buf` exhausted local disk mid-build —
+      # both are environment blockers, not code blockers). Falling back to
+      # the documented `protoc --fatal_warnings` path, which was verified
+      # locally: `protoc --proto_path=proto --fatal_warnings -o /dev/null
+      # proto/*.proto` exits 0 against this repo's proto/*.proto today.
+      # TODO(buf): once a `buf.yaml` module root is added under proto/ and
+      # `buf` can be installed in CI, switch this step to
+      # `bufbuild/buf-setup-action` + `buf lint` for richer style rules
+      # (buf lint checks far more than protoc's own warnings).
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: protoc --fatal_warnings
+        run: protoc --proto_path=proto --fatal_warnings -o /dev/null proto/*.proto

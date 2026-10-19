@@ -184,7 +184,9 @@ impl Ledger {
             ));
         }
         if name.trim().is_empty() {
-            return Err(LedgerError::InvalidArgument("name must not be empty".into()));
+            return Err(LedgerError::InvalidArgument(
+                "name must not be empty".into(),
+            ));
         }
 
         let record = TenantRecord {
@@ -233,10 +235,12 @@ impl Ledger {
         let t = tenant::get(&inner.db, &tenant_id)?
             .ok_or_else(|| LedgerError::TenantNotFound(tenant_id.clone()))?;
         if t.currency != amount.currency() {
-            return Err(LedgerError::Money(crate::money::MoneyError::CurrencyMismatch {
-                a: t.currency,
-                b: amount.currency().to_string(),
-            }));
+            return Err(LedgerError::Money(
+                crate::money::MoneyError::CurrencyMismatch {
+                    a: t.currency,
+                    b: amount.currency().to_string(),
+                },
+            ));
         }
 
         let record = DepositRecord {
@@ -397,10 +401,12 @@ impl Ledger {
         let t = tenant::get(&inner.db, &tenant_id)?
             .ok_or_else(|| LedgerError::TenantNotFound(tenant_id.clone()))?;
         if t.currency != amount.currency() {
-            return Err(LedgerError::Money(crate::money::MoneyError::CurrencyMismatch {
-                a: t.currency,
-                b: amount.currency().to_string(),
-            }));
+            return Err(LedgerError::Money(
+                crate::money::MoneyError::CurrencyMismatch {
+                    a: t.currency,
+                    b: amount.currency().to_string(),
+                },
+            ));
         }
 
         let current = read_balance(&inner.db, &tenant_id)?;
@@ -548,7 +554,9 @@ impl Ledger {
     ) -> Result<Vec<AgentDecisionRecord>, LedgerError> {
         let limit = if limit <= 0 { 50 } else { limit as i64 };
         let inner = self.inner.lock().expect("ledger mutex poisoned");
-        Ok(agent_decision::list_for_tenant(&inner.db, tenant_id, limit)?)
+        Ok(agent_decision::list_for_tenant(
+            &inner.db, tenant_id, limit,
+        )?)
     }
 }
 
@@ -608,7 +616,12 @@ fn apply_replayed_event(db: &Connection, event: WalEvent) -> Result<(), LedgerEr
             // indexed.
             let inserted = insert_ledger_entry_if_new(&tx, &entry)?;
             if inserted {
-                write_balance(&tx, &entry.tenant_id, entry.balance_after_minor_units, held_after_minor_units)?;
+                write_balance(
+                    &tx,
+                    &entry.tenant_id,
+                    entry.balance_after_minor_units,
+                    held_after_minor_units,
+                )?;
             }
         }
         WalEvent::EntryApplied {
@@ -622,7 +635,12 @@ fn apply_replayed_event(db: &Connection, event: WalEvent) -> Result<(), LedgerEr
             // row did not already exist.
             let inserted = insert_ledger_entry_if_new(&tx, &entry)?;
             if inserted {
-                write_balance(&tx, &entry.tenant_id, entry.balance_after_minor_units, held_after_minor_units)?;
+                write_balance(
+                    &tx,
+                    &entry.tenant_id,
+                    entry.balance_after_minor_units,
+                    held_after_minor_units,
+                )?;
             }
         }
         WalEvent::AgentDecisionRecorded(d) => {
@@ -903,7 +921,9 @@ mod tests {
     #[test]
     fn credit_then_debit_within_floor_succeeds() {
         let ledger = new_ledger();
-        let t = ledger.create_tenant("Acme".into(), "USD".into(), 500).unwrap();
+        let t = ledger
+            .create_tenant("Acme".into(), "USD".into(), 500)
+            .unwrap();
 
         let credit = ledger
             .apply_entry(
@@ -938,7 +958,9 @@ mod tests {
     #[test]
     fn debit_breaching_reserve_floor_is_rejected_without_mutating_balance() {
         let ledger = new_ledger();
-        let t = ledger.create_tenant("Acme".into(), "USD".into(), 500).unwrap();
+        let t = ledger
+            .create_tenant("Acme".into(), "USD".into(), 500)
+            .unwrap();
         ledger
             .apply_entry(
                 t.id.clone(),
@@ -970,6 +992,9 @@ mod tests {
         }
 
         let (balance, _) = ledger.get_balance(&t.id).unwrap();
-        assert_eq!(balance.available_minor_units, 1000, "balance must be unchanged");
+        assert_eq!(
+            balance.available_minor_units, 1000,
+            "balance must be unchanged"
+        );
     }
 }

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::agent_decision::AgentAction;
+use crate::audit_mirror::AuditMirror;
 use crate::deposit::DepositRecord;
 use crate::ledger::{ApplyOutcome, BalanceRecord, Ledger, LedgerEntryRecord, LedgerEntryType};
 use crate::money::Money;
@@ -16,11 +17,16 @@ use crate::tenant::TenantRecord;
 
 pub struct LedgerCoreService {
     ledger: Arc<Ledger>,
+    // Mirrors every successfully-applied ledger entry and recorded
+    // agent decision into audit-log (see docs/SCALE-EXPANSION.md
+    // section 8, crate::audit_mirror). Best-effort: never awaited
+    // inline, never allowed to affect this service's own responses.
+    audit: AuditMirror,
 }
 
 impl LedgerCoreService {
-    pub fn new(ledger: Arc<Ledger>) -> Self {
-        Self { ledger }
+    pub fn new(ledger: Arc<Ledger>, audit: AuditMirror) -> Self {
+        Self { ledger, audit }
     }
 }
 
@@ -31,6 +37,12 @@ fn to_pb_money(minor_units: i64, currency: &str) -> common_pb::Money {
     }
 }
 
+// `tonic::Status` is inherently large (it carries a message, optional
+// source error, and metadata map); boxing it here would just push the
+// same size cost onto every call site's `?`-propagation into the
+// handler's own `Result<Response<T>, Status>`. Allowing the lint locally
+// is the standard tonic-ecosystem idiom for this exact shape.
+#[allow(clippy::result_large_err)]
 fn money_from_pb(m: Option<common_pb::Money>, field: &str) -> Result<Money, Status> {
     let m = m.ok_or_else(|| Status::invalid_argument(format!("{field} is required")))?;
     Money::non_negative(m.minor_units, m.currency)
@@ -115,10 +127,9 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
     ) -> Result<Response<pb::Tenant>, Status> {
         let req = request.into_inner();
         let ledger = self.ledger.clone();
-        let tenant =
-            tokio::task::spawn_blocking(move || ledger.get_tenant(&req.id))
-                .await
-                .map_err(join_error)??;
+        let tenant = tokio::task::spawn_blocking(move || ledger.get_tenant(&req.id))
+            .await
+            .map_err(join_error)??;
         Ok(Response::new(to_pb_tenant(&tenant)))
     }
 
@@ -147,7 +158,12 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         let amount = money_from_pb(req.expected_amount, "expected_amount")?;
         let ledger = self.ledger.clone();
         let deposit = tokio::task::spawn_blocking(move || {
-            ledger.record_deposit(req.tenant_id, amount, req.expected_at_unix, req.external_ref)
+            ledger.record_deposit(
+                req.tenant_id,
+                amount,
+                req.expected_at_unix,
+                req.external_ref,
+            )
         })
         .await
         .map_err(join_error)??;
@@ -206,26 +222,36 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         let entry_type = LedgerEntryType::from_i32(req.r#type);
         let ledger = self.ledger.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            ledger.apply_entry(
-                req.tenant_id.clone(),
-                entry_type,
-                amount,
-                req.reference,
-                req.idempotency_key,
-                req.memo,
-            )
-            .map(|outcome| (outcome, req.tenant_id))
+            ledger
+                .apply_entry(
+                    req.tenant_id.clone(),
+                    entry_type,
+                    amount,
+                    req.reference,
+                    req.idempotency_key,
+                    req.memo,
+                )
+                .map(|outcome| (outcome, req.tenant_id))
         })
         .await
         .map_err(join_error)??;
 
         let (outcome, tenant_id) = outcome;
         let response = match outcome {
-            ApplyOutcome::Applied { entry, balance } => pb::ApplyEntryResponse {
-                entry: Some(to_pb_entry(&entry)),
-                balance_after: Some(to_pb_balance(&tenant_id, &balance, &entry.currency)),
-                reserve_floor_violated: false,
-            },
+            ApplyOutcome::Applied { entry, balance } => {
+                // Mirror into audit-log (see docs/SCALE-EXPANSION.md
+                // section 8) only for entries that actually landed —
+                // a ReserveFloorViolated rejection moved no money and
+                // isn't a ledger event to mirror. Fire-and-forget:
+                // never awaited, never allowed to delay or fail this
+                // response.
+                self.audit.mirror_ledger_entry(&tenant_id, &entry);
+                pb::ApplyEntryResponse {
+                    entry: Some(to_pb_entry(&entry)),
+                    balance_after: Some(to_pb_balance(&tenant_id, &balance, &entry.currency)),
+                    reserve_floor_violated: false,
+                }
+            }
             ApplyOutcome::ReserveFloorViolated { balance, currency } => pb::ApplyEntryResponse {
                 entry: None,
                 balance_after: Some(to_pb_balance(&tenant_id, &balance, &currency)),
@@ -243,12 +269,13 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         let tenant_id = req.tenant_id;
         let ledger = self.ledger.clone();
         let tenant_id_for_lookup = tenant_id.clone();
-        let (balance, currency) = tokio::task::spawn_blocking(move || {
-            ledger.get_balance(&tenant_id_for_lookup)
-        })
-        .await
-        .map_err(join_error)??;
-        Ok(Response::new(to_pb_balance(&tenant_id, &balance, &currency)))
+        let (balance, currency) =
+            tokio::task::spawn_blocking(move || ledger.get_balance(&tenant_id_for_lookup))
+                .await
+                .map_err(join_error)??;
+        Ok(Response::new(to_pb_balance(
+            &tenant_id, &balance, &currency,
+        )))
     }
 
     async fn list_entries(
@@ -303,6 +330,9 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         })
         .await
         .map_err(join_error)??;
+        // Mirror into audit-log (see docs/SCALE-EXPANSION.md section
+        // 8) — fire-and-forget, same posture as apply_entry above.
+        self.audit.mirror_agent_decision(&decision);
         Ok(Response::new(to_pb_agent_decision(&decision)))
     }
 

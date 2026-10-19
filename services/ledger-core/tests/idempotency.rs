@@ -64,8 +64,14 @@ fn duplicate_apply_entry_call_is_a_no_op_the_second_time() {
 
     match second {
         ApplyOutcome::Applied { entry, balance } => {
-            assert_eq!(entry.id, first_entry.id, "replay must return the original entry");
-            assert_eq!(balance.available_minor_units, 5_000, "balance must not double-apply");
+            assert_eq!(
+                entry.id, first_entry.id,
+                "replay must return the original entry"
+            );
+            assert_eq!(
+                balance.available_minor_units, 5_000,
+                "balance must not double-apply"
+            );
         }
         other => panic!("expected Applied, got {other:?}"),
     }
@@ -108,7 +114,10 @@ fn replay_ignores_different_parameters_and_returns_the_original_decision() {
 
     match replay {
         ApplyOutcome::Applied { entry, balance } => {
-            assert_eq!(entry.amount_minor_units, 1_000, "must be the ORIGINAL amount, not 9999");
+            assert_eq!(
+                entry.amount_minor_units, 1_000,
+                "must be the ORIGINAL amount, not 9999"
+            );
             assert_eq!(balance.available_minor_units, 1_000);
         }
         other => panic!("expected Applied (idempotent replay), got {other:?}"),
@@ -133,7 +142,10 @@ fn missing_idempotency_key_is_rejected() {
         )
         .unwrap_err();
 
-    assert!(matches!(err, ledger_core::error::LedgerError::IdempotencyKeyRequired));
+    assert!(matches!(
+        err,
+        ledger_core::error::LedgerError::IdempotencyKeyRequired
+    ));
 }
 
 #[test]
@@ -165,5 +177,8 @@ fn distinct_idempotency_keys_both_apply() {
         .unwrap();
 
     let (balance, _) = ledger.get_balance(&tenant.id).unwrap();
-    assert_eq!(balance.available_minor_units, 2_000, "two distinct keys must both apply");
+    assert_eq!(
+        balance.available_minor_units, 2_000,
+        "two distinct keys must both apply"
+    );
 }

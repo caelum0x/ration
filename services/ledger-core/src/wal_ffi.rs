@@ -193,14 +193,9 @@ impl Wal {
         }
         loop {
             let mut out_len: u32 = 0;
-            let cap: u32 = self
-                .read_buf
-                .len()
-                .try_into()
-                .unwrap_or(u32::MAX);
-            let rc = unsafe {
-                wal_read_next(self.ptr, self.read_buf.as_mut_ptr(), cap, &mut out_len)
-            };
+            let cap: u32 = self.read_buf.len().try_into().unwrap_or(u32::MAX);
+            let rc =
+                unsafe { wal_read_next(self.ptr, self.read_buf.as_mut_ptr(), cap, &mut out_len) };
             match rc {
                 WAL_OK => {
                     return Ok(Some(self.read_buf[..out_len as usize].to_vec()));

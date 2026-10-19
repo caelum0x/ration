@@ -1,0 +1,88 @@
+# OpenTelemetry Collector config for Ration's local observability stack —
+# docs/SCALE-EXPANSION.md section 2.
+#
+# Every service's trace exporter (pkg/telemetry.Setup on the Go side,
+# ledger_core::telemetry::init in Rust) sends OTLP over gRPC to this
+# collector by default (OTEL_EXPORTER_OTLP_ENDPOINT /
+# RATION_OTEL_EXPORTER_ENDPOINT default to this container's address in
+# docker-compose.yml). This collector's only job is traces: metrics are
+# each service's own Prometheus /metrics endpoint (pkg/metrics), scraped
+# directly by Prometheus (infra/prometheus/prometheus.yml) — not routed
+# through here — so there is deliberately no `prometheus` receiver or
+# exporter in this pipeline.
+#
+# Run standalone (outside docker-compose) with:
+#   otelcol --config infra/otel-collector/config.yaml
+
+receivers:
+  # Accepts both gRPC (what every service in this project actually uses)
+  # and HTTP (kept enabled for ad-hoc debugging with curl/otel CLI tools
+  # against the same collector without extra config).
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Batches spans before export so a burst of ledger writes doesn't turn
+  # into one OTLP export call per span; bounded timeout keeps end-to-end
+  # trace visibility latency low enough for interactive debugging.
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+  # Caps collector memory so a runaway span volume (e.g. a chaos test,
+  # scripts/chaos/kill-ledger-mid-write.sh, hammering ApplyEntry) degrades
+  # by dropping spans under backpressure rather than OOMing the collector
+  # container and taking the whole observability stack down.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 200
+    spike_limit_mib: 50
+
+exporters:
+  # Jaeger (and Tempo, which also speaks OTLP natively) both accept
+  # traces directly over OTLP — the "jaeger" container in
+  # docker-compose.yml runs jaeger-all-in-one with its OTLP receiver
+  # enabled (COLLECTOR_OTLP_ENABLED=true), listening on this same
+  # 4317/4318 pair inside its own container.
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Always-on stdout exporter: lets `docker compose logs otel-collector`
+  # confirm spans are actually flowing end to end even before anyone
+  # opens Grafana/Jaeger's UI — genuinely useful when standing the stack
+  # up for the first time or debugging "my traces aren't showing up".
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger, debug]
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      # Default is 127.0.0.1:8888 — loopback *inside this container's own
+      # network namespace*, unreachable from infra/prometheus/
+      # prometheus.yml's `otel-collector:8888` scrape target on another
+      # container. Verified empirically: Prometheus reported this job
+      # permanently "down" until this override was added. `readers` (not
+      # the simpler `metrics.address` key) because this collector version
+      # (0.116.1) logs `metrics::address is being deprecated in favor of
+      # metrics::readers` — using the current form rather than shipping a
+      # config that already warns on its way out.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
