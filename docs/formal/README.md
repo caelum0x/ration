@@ -139,6 +139,55 @@ Deliberately **not** modeled (out of scope, already covered elsewhere):
 - Multi-currency / currency-mismatch rejection — orthogonal to the balance
   arithmetic this spec checks.
 
+## Reproduction log
+
+Re-run and confirmed independently on 2026-10-19 (this machine had no JRE
+at all beforehand — `brew install openjdk` installed OpenJDK 27 fresh,
+exposed at `/opt/homebrew/opt/openjdk/bin/java`, not yet on `PATH` as
+plain `java`):
+
+```
+$ cd docs/formal
+$ /opt/homebrew/opt/openjdk/bin/java -cp /private/tmp/tla2tools.jar tlc2.TLC -config ledger_model.cfg ledger_model.tla
+...
+Finished computing initial states: 1 distinct state generated at 2026-10-19 13:41:13.
+Checking 2 branches of temporal properties for the current state space with 84566 total distinct states at (2026-10-19 13:41:16)
+Finished checking temporal properties in 00s at 2026-10-19 13:41:17
+Progress(13) at 2026-10-19 13:41:18: 896.001 states generated, 50.000 distinct states found, 0 states left on queue.
+Checking 2 branches of temporal properties for the complete state space with 100000 total distinct states at (2026-10-19 13:41:18)
+Finished checking temporal properties in 00s at 2026-10-19 13:41:19
+Model checking completed. No error has been found.
+896001 states generated, 50000 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 13.
+Finished in 06s at (2026-10-19 13:41:19)
+```
+
+Identical state counts and depth to the first run above (896,001
+generated / 50,000 distinct / depth 13) — expected, since this is an
+exhaustive breadth-first search over a deterministic, finite transition
+system with fixed constants, not a randomized sample; the fingerprint
+seed differs between runs but doesn't change what gets enumerated. All
+three invariants (`TypeOK`, `SafetyReserveFloor`, `SafetyHeldNonNegative`)
+and the `HoldsResolve` liveness property passed again. No regressions, no
+modeling bugs found in either the spec or `services/ledger-core/src/ledger.rs`.
+
+**Confirmed `ledger.tla` cannot be run standalone**, independently
+verifying the claim in "Why there are two `.tla` files" above: a
+`ledger.cfg` was written assigning `Tenants`/`HoldIds` as plain TLC
+string sets (`{"t1", "t2"}`) specifically to let `ReserveFloor` be
+written as an inline record literal (`[t1 |-> 2, t2 |-> 0]`) without the
+model-value domain mismatch the module header describes. TLC's `.cfg`
+parser rejected it outright — `TLC found an error in the configuration
+file ... It was expecting ], but did not find it` — because the `.cfg`
+grammar doesn't support function/record literal syntax for a `CONSTANTS`
+assignment at all, regardless of the domain's type. This is a strictly
+stronger reason than the domain-mismatch one originally documented, and
+it confirms `ledger_model.tla`'s `EXTENDS`-based indirection is not
+optional scaffolding — it is the only way to get a concrete, checkable
+model out of `ledger.tla` under TLC's actual `.cfg` grammar. That scratch
+`ledger.cfg` was deleted after confirming this; `ledger_model.cfg` above
+is the one real, working config for this spec.
+
 ## Two honesty notes — read before trusting a green run
 
 **1. `CAPTURE` doesn't exist in `services/ledger-core` yet.** The real

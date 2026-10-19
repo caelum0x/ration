@@ -107,6 +107,19 @@ aggregate surface, these are internal):
   `wal_read_next`'s frame parser against malformed/truncated/bit-flipped
   input — this is the file most likely to have a real memory-safety bug,
   fuzz it for real.
+  **Built and run on 2026-10-19** (see `services/wal/fuzz/Makefile`'s own
+  comment for why it's intentionally not in `make test`): Apple's Command
+  Line Tools clang doesn't bundle `libclang_rt.fuzzer_osx.a`, so
+  `brew install llvm` was required first; the Makefile's `CC` auto-detect
+  then picked up Homebrew's `llvm@20` clang with no manual `CC=` override
+  needed. `make build` compiled clean with
+  `-fsanitize=fuzzer,address,undefined`. `make smoke` (30s,
+  `services/wal/fuzz/`) ran 216,303 executions at ~6,977 exec/s, 78 new
+  corpus units discovered, 84 lines/414 features of coverage reached, zero
+  crashes/leaks/ASan or UBSan findings — `wal_read_next()` correctly
+  rejects every malformed/truncated/bit-flipped input it was fed as
+  `WAL_ERR_CORRUPT`/`WAL_ERR_BUFFER_SMALL`/`WAL_ERR_EOF` rather than
+  misbehaving. No bug found, so nothing to fix in `wal.c`.
 - Go: `go test -fuzz` harness for `internal/policy/rules.go`'s envelope
   computation (random tenant balances/reserve floors/deposit amounts,
   assert the computed grant never exceeds headroom).
