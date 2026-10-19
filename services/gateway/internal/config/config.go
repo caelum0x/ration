@@ -1,8 +1,11 @@
 // Package config loads and validates gateway configuration from the
-// environment. It fails fast (returns an error from Load, never panics)
-// when AIRWALLEX_MODE=live and a required live-mode credential is
-// missing, since a half-configured live client is worse than refusing to
-// start.
+// environment. The gateway is a thin BFF (docs/SCALE-EXPANSION.md
+// section 1, docs/adr/0004): it no longer owns Airwallex credentials or
+// bridge-funding policy (those moved to services/card-issuance) or a
+// webhook secret/listener (moved to services/webhook-ingestion) — this
+// package is left with exactly what a pure fan-out layer needs: where
+// to dial its four backing services, its own listen addresses, mTLS and
+// rate-limit settings.
 package config
 
 import (
@@ -10,63 +13,67 @@ import (
 	"os"
 	"strconv"
 	"time"
-)
 
-// Mode is the Airwallex integration mode.
-type Mode string
-
-const (
-	ModeMock Mode = "mock"
-	ModeLive Mode = "live"
+	"github.com/caelum0x/ration/pkg/mtls"
 )
 
 // Config holds every environment-derived setting the gateway needs.
 type Config struct {
-	AirwallexMode          Mode
-	AirwallexClientID      string
-	AirwallexAPIKey        string
-	AirwallexBaseURL       string
-	AirwallexWebhookSecret string
+	LedgerCoreAddr       string
+	CardIssuanceAddr     string
+	WebhookIngestionAddr string
 
-	LedgerCoreAddr  string
 	GatewayGRPCAddr string
-	GatewayHTTPAddr string
-	DataDir         string
+	MetricsAddr     string
 
-	BridgeMaxFraction        float64
-	BridgeMinGrantMinorUnits int64
-	BridgeVelocityWindow     time.Duration
+	// MTLS configures mutual TLS for the gateway's own gRPC server and
+	// for dialing its backing services (see pkg/mtls, infra/dev-ca/).
+	// Disabled by default — see GATEWAY_MTLS_ENABLED in pkg/mtls's doc
+	// comment.
+	MTLS mtls.Config
+
+	// RateLimit* tunes the per-tenant token bucket (see
+	// internal/ratelimit) in front of every RPC on the gateway's
+	// public gRPC surface.
+	RateLimitRPS           float64
+	RateLimitBurst         float64
+	RateLimitSweepInterval time.Duration
 }
 
 // Load reads configuration from the process environment and validates it.
 func Load() (*Config, error) {
 	cfg := &Config{
-		AirwallexMode:          Mode(getenvDefault("AIRWALLEX_MODE", string(ModeMock))),
-		AirwallexClientID:      os.Getenv("AIRWALLEX_CLIENT_ID"),
-		AirwallexAPIKey:        os.Getenv("AIRWALLEX_API_KEY"),
-		AirwallexBaseURL:       getenvDefault("AIRWALLEX_BASE_URL", "https://api-demo.airwallex.com"),
-		AirwallexWebhookSecret: os.Getenv("AIRWALLEX_WEBHOOK_SECRET"),
+		LedgerCoreAddr: getenvDefault("LEDGER_CORE_ADDR", "localhost:7001"),
+		// Ports 7010-7013 are reserved for the section 1 split
+		// (auth=7010, tenant-registry=7011, card-issuance=7012,
+		// webhook-ingestion=7013) — see each of those services' own
+		// internal/config for the same comment.
+		CardIssuanceAddr:     getenvDefault("CARD_ISSUANCE_ADDR", "localhost:7012"),
+		WebhookIngestionAddr: getenvDefault("WEBHOOK_INGESTION_ADDR", "localhost:7013"),
 
-		LedgerCoreAddr:  getenvDefault("LEDGER_CORE_ADDR", "localhost:7001"),
 		GatewayGRPCAddr: getenvDefault("GATEWAY_GRPC_ADDR", "localhost:7002"),
-		GatewayHTTPAddr: getenvDefault("GATEWAY_HTTP_ADDR", "localhost:8080"),
-		DataDir:         getenvDefault("RATION_DATA_DIR", "./data"),
+		MetricsAddr:     getenvDefault("GATEWAY_METRICS_ADDR", "localhost:9091"),
 	}
 
 	var err error
-	cfg.BridgeMaxFraction, err = getenvFloatDefault("RATION_BRIDGE_MAX_FRACTION", 0.6)
+	cfg.MTLS, err = mtls.LoadFromEnv("GATEWAY")
 	if err != nil {
 		return nil, err
 	}
-	cfg.BridgeMinGrantMinorUnits, err = getenvInt64Default("RATION_BRIDGE_MIN_GRANT_MINOR_UNITS", 500)
+
+	cfg.RateLimitRPS, err = getenvFloatDefault("RATION_RATELIMIT_RPS", 20)
 	if err != nil {
 		return nil, err
 	}
-	velocityHours, err := getenvInt64Default("RATION_BRIDGE_VELOCITY_WINDOW_HOURS", 24)
+	cfg.RateLimitBurst, err = getenvFloatDefault("RATION_RATELIMIT_BURST", 40)
 	if err != nil {
 		return nil, err
 	}
-	cfg.BridgeVelocityWindow = time.Duration(velocityHours) * time.Hour
+	sweepMinutes, err := getenvInt64Default("RATION_RATELIMIT_SWEEP_INTERVAL_MINUTES", 10)
+	if err != nil {
+		return nil, err
+	}
+	cfg.RateLimitSweepInterval = time.Duration(sweepMinutes) * time.Minute
 
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -75,41 +82,17 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	switch c.AirwallexMode {
-	case ModeMock:
-		// No credentials required; the mock client is fully self-contained.
-	case ModeLive:
-		missing := []string{}
-		if c.AirwallexClientID == "" {
-			missing = append(missing, "AIRWALLEX_CLIENT_ID")
-		}
-		if c.AirwallexAPIKey == "" {
-			missing = append(missing, "AIRWALLEX_API_KEY")
-		}
-		if c.AirwallexWebhookSecret == "" {
-			missing = append(missing, "AIRWALLEX_WEBHOOK_SECRET")
-		}
-		if c.AirwallexBaseURL == "" {
-			missing = append(missing, "AIRWALLEX_BASE_URL")
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf("config: AIRWALLEX_MODE=live requires env vars: %v", missing)
-		}
-	default:
-		return fmt.Errorf("config: invalid AIRWALLEX_MODE %q (want %q or %q)", c.AirwallexMode, ModeMock, ModeLive)
-	}
-
-	if c.BridgeMaxFraction <= 0 || c.BridgeMaxFraction > 1 {
-		return fmt.Errorf("config: RATION_BRIDGE_MAX_FRACTION must be in (0, 1], got %v", c.BridgeMaxFraction)
-	}
-	if c.BridgeMinGrantMinorUnits < 0 {
-		return fmt.Errorf("config: RATION_BRIDGE_MIN_GRANT_MINOR_UNITS must be >= 0, got %d", c.BridgeMinGrantMinorUnits)
-	}
-	if c.BridgeVelocityWindow <= 0 {
-		return fmt.Errorf("config: RATION_BRIDGE_VELOCITY_WINDOW_HOURS must be > 0")
-	}
 	if c.LedgerCoreAddr == "" {
 		return fmt.Errorf("config: LEDGER_CORE_ADDR must not be empty")
+	}
+	if c.CardIssuanceAddr == "" {
+		return fmt.Errorf("config: CARD_ISSUANCE_ADDR must not be empty")
+	}
+	if c.WebhookIngestionAddr == "" {
+		return fmt.Errorf("config: WEBHOOK_INGESTION_ADDR must not be empty")
+	}
+	if c.GatewayGRPCAddr == "" {
+		return fmt.Errorf("config: GATEWAY_GRPC_ADDR must not be empty")
 	}
 	return nil
 }

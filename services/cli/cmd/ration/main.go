@@ -1,11 +1,23 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
 
+	"github.com/caelum0x/ration/pkg/telemetry"
 	"github.com/spf13/cobra"
+)
+
+// serviceName/serviceVersion tag every trace span this invocation
+// emits. "cli" is not a long-running process — telemetry.Setup still
+// installs a real OTLP exporter per invocation (batched, best-effort,
+// non-blocking per pkg/telemetry's doc comment) and its shutdown func
+// below flushes the one trace before the process exits.
+const (
+	serviceName    = "cli"
+	serviceVersion = "0.1.0"
 )
 
 const (
@@ -61,7 +73,29 @@ the resulting agent decisions — all live, from the terminal.`,
 }
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
+	ctx := context.Background()
+
+	shutdownTelemetry, err := telemetry.Setup(ctx, serviceName, serviceVersion)
+	if err != nil {
+		// Never let an unreachable/misconfigured collector block the
+		// operator CLI from running; report and continue uninstrumented.
+		fmt.Fprintf(os.Stderr, "ration: telemetry setup failed, continuing without tracing: %v\n", err)
+	} else {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = shutdownTelemetry(shutdownCtx)
+		}()
+	}
+
+	// One correlation ID per CLI invocation, threaded through every
+	// subcommand's cmd.Context() and from there into every gRPC call
+	// dialClients makes — this is the "correlation ID threaded from the
+	// CLI command through every hop" requirement from
+	// docs/SCALE-EXPANSION.md section 2.
+	ctx = telemetry.ContextWithCorrelationID(ctx, telemetry.NewCorrelationID())
+
+	if err := newRootCmd().ExecuteContext(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "ration: %v\n", err)
 		os.Exit(1)
 	}

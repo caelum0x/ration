@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package ration.webhookingestion.v1;
+
+option go_package = "github.com/caelum0x/ration/pkg/pb/webhookingestion";
+
+// WebhookIngestion is an internal-only service (docs/SCALE-EXPANSION.md
+// section 1): a direct extraction of services/gateway's old
+// internal/airwallex/webhook.go (HMAC signature verification + envelope
+// parsing) and internal/httpserver/webhooks.go (the HTTP listener and
+// the "mark the matching deposit received" business logic). It receives
+// Airwallex webhook deliveries over its own plain HTTP listener
+// (WEBHOOK_INGESTION_HTTP_ADDR — gRPC is for the internal surface below,
+// not for inbound Airwallex deliveries, which are plain signed HTTP
+// POSTs per Airwallex's own webhook contract) and publishes normalized
+// events onto a simple in-process event bus.
+//
+// docs/SCALE-EXPANSION.md section 1 calls this bus a placeholder: "a
+// simple internal event bus for now — document where a real deployment
+// would swap in SQS/Kafka." Recorded here: a real deployment running
+// more than one webhook-ingestion replica needs a shared broker (SQS
+// FIFO keyed by tenant_id, or a Kafka topic partitioned the same way) so
+// every subscriber sees every event exactly once regardless of which
+// replica received the originating webhook — this in-process Go-channel
+// bus only fans out to subscribers of *this* process, which is fine for
+// the single-replica deployment this project ships today but is the
+// first thing to swap out before running N > 1 replicas for real.
+service WebhookIngestion {
+  // StreamEvents lets another internal service (services/gateway, to
+  // merge into its own activity feed) subscribe to every normalized
+  // event this service publishes, optionally filtered to one tenant.
+  rpc StreamEvents(StreamEventsRequest) returns (stream NormalizedEvent);
+}
+
+message StreamEventsRequest {
+  string tenant_id = 1; // empty = all tenants
+}
+
+message NormalizedEvent {
+  string id = 1;
+  string tenant_id = 2;
+  string kind = 3; // "deposit", ...
+  string summary = 4;
+  int64 at_unix = 5;
+}

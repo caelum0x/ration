@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package ration.audit.v1;
+
+option go_package = "github.com/caelum0x/ration/pkg/pb/audit";
+
+// AuditLog is an independent, append-only mirror of every money-moving and
+// agent-decision event in the system. It is a deliberately separate trust
+// boundary from ledger-core's own WAL: ledger-core (or a compromised
+// service calling it) can never rewrite or delete what has already landed
+// here, because this service only ever appends, and every record is
+// chained to the previous one by hash so a gap or edit is detectable by
+// VerifyChain.
+//
+// Writers (ledger-core mirroring ApplyEntry/RecordAgentDecision outcomes)
+// treat every RPC here as best-effort: a failure to reach this service
+// must never block or fail the original operation. AuditLog is a safety
+// net for incident review and compliance, not a dependency the hot path
+// can fail on.
+service AuditLog {
+  // Append writes one audit record. It is idempotent on
+  // (source_service, kind, ref_id): re-appending the same
+  // (source_service, kind, ref_id) returns the original record rather
+  // than creating a duplicate, since a best-effort caller may retry after
+  // an ambiguous failure (e.g. it applied but the ack was lost).
+  rpc Append(AppendRequest) returns (AppendResponse);
+
+  // ListRecords returns recorded entries for a tenant, oldest first,
+  // paginated. tenant_id empty lists across all tenants (operator use).
+  rpc ListRecords(ListRecordsRequest) returns (ListRecordsResponse);
+
+  // VerifyChain walks the full hash chain from genesis and reports the
+  // first broken link, if any — the mechanism that makes "append-only"
+  // an enforced property rather than just a convention.
+  rpc VerifyChain(VerifyChainRequest) returns (VerifyChainResponse);
+}
+
+enum SourceKind {
+  SOURCE_KIND_UNSPECIFIED = 0;
+  SOURCE_KIND_LEDGER_ENTRY = 1;
+  SOURCE_KIND_AGENT_DECISION = 2;
+}
+
+message AppendRequest {
+  // Which service produced this record, e.g. "ledger-core". Recorded
+  // verbatim for the audit trail; AuditLog does not authenticate it
+  // beyond whatever transport-level mTLS identity the gRPC call carries.
+  string source_service = 1;
+  SourceKind kind = 2;
+  string tenant_id = 3;
+  // ref_id is the id of the original record in the source system (the
+  // LedgerEntry.id or AgentDecision.id ledger-core already assigned),
+  // not a new id minted here.
+  string ref_id = 4;
+  // payload_json is a serialized snapshot of the original record (the
+  // full LedgerEntry or AgentDecision proto, marshaled as JSON) so an
+  // auditor can reconstruct exactly what happened without needing
+  // ledger-core's own store to still be intact or trustworthy.
+  string payload_json = 5;
+  int64 occurred_at_unix = 6;
+}
+
+message AppendResponse {
+  AuditRecord record = 1;
+}
+
+message AuditRecord {
+  // Monotonically increasing position in the chain, starting at 1.
+  int64 sequence = 1;
+  string source_service = 2;
+  SourceKind kind = 3;
+  string tenant_id = 4;
+  string ref_id = 5;
+  string payload_json = 6;
+  int64 occurred_at_unix = 7;
+  int64 recorded_at_unix = 8;
+  // prev_hash is the hash of the previous record in the chain ("" /
+  // 64 zeros for the first record); hash = sha256(prev_hash ||
+  // canonical record bytes). Exposed so a client can independently
+  // re-verify a slice of the chain without trusting VerifyChain's own
+  // verdict.
+  string prev_hash = 9;
+  string hash = 10;
+}
+
+message ListRecordsRequest {
+  string tenant_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListRecordsResponse {
+  repeated AuditRecord records = 1;
+  string next_page_token = 2;
+}
+
+message VerifyChainRequest {}
+
+message VerifyChainResponse {
+  bool intact = 1;
+  int64 records_checked = 2;
+  // first_broken_sequence is 0 when intact is true.
+  int64 first_broken_sequence = 3;
+  string detail = 4;
+}

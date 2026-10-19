@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package ration.tenantregistry.v1;
+
+import "ledger.proto";
+
+option go_package = "github.com/caelum0x/ration/pkg/pb/tenantregistry";
+
+// TenantRegistry is an internal-only service (docs/SCALE-EXPANSION.md
+// section 1): tenant CRUD. It owns no state of its own — every
+// operation proxies to LedgerCore, which remains the one authoritative
+// store for tenant records (docs/ARCHITECTURE.md) — this is a thin
+// service by design (docs/adr/0004), split out purely so tenant CRUD's
+// low, bursty-on-onboarding traffic and deploy cadence never forces a
+// redeploy of card-issuance. Reuses ledger.proto's Tenant message
+// directly rather than defining a parallel one, since this service adds
+// no fields ledger-core doesn't already own.
+service TenantRegistry {
+  rpc CreateTenant(CreateTenantRequest) returns (ration.ledger.v1.Tenant);
+  rpc GetTenant(GetTenantRequest) returns (ration.ledger.v1.Tenant);
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+}
+
+message CreateTenantRequest {
+  string name = 1;
+  string currency = 2; // ISO 4217
+  int64 reserve_floor_minor_units = 3;
+}
+
+message GetTenantRequest {
+  string id = 1;
+}
+
+message ListTenantsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListTenantsResponse {
+  repeated ration.ledger.v1.Tenant tenants = 1;
+  string next_page_token = 2;
+}

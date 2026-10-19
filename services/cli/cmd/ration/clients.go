@@ -3,10 +3,11 @@ package main
 import (
 	"fmt"
 
+	"github.com/caelum0x/ration/pkg/mtls"
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
+	"github.com/caelum0x/ration/pkg/telemetry"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // clients bundles the two gRPC connections the CLI needs. Tenant/balance/
@@ -26,12 +27,44 @@ type clients struct {
 // dialClients opens both gRPC connections. Callers must call close() when
 // done, typically via defer.
 func dialClients(ledgerAddr, gatewayAddr string) (*clients, error) {
-	ledgerConn, err := grpc.NewClient(ledgerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Every RPC the CLI issues carries the one correlation ID main.go
+	// mints for the whole command invocation (see
+	// telemetry.ContextWithCorrelationID in main()) plus a trace span,
+	// so "ration status --tenant X" shows up as a single trace spanning
+	// every service it touches.
+	commonDialOpts := []grpc.DialOption{
+		telemetry.DialOption(),
+		grpc.WithChainUnaryInterceptor(telemetry.UnaryClientInterceptor()),
+		grpc.WithChainStreamInterceptor(telemetry.StreamClientInterceptor()),
+	}
+
+	// mTLS (see docs/SCALE-EXPANSION.md section 8, pkg/mtls,
+	// infra/dev-ca/) is opt-in and disabled by default — with no
+	// CLI_MTLS_* env vars set, DialOption() falls back to plaintext, so
+	// a bare `go run` keeps working with zero certs on disk. The CLI
+	// dials two different peers with its one identity, so the server
+	// name to verify each peer's certificate against is set per dial
+	// (see mtls.Config.WithDefaultServerName).
+	mtlsCfg, err := mtls.LoadFromEnv("CLI")
+	if err != nil {
+		return nil, fmt.Errorf("load mTLS config: %w", err)
+	}
+
+	ledgerDialOpt, err := mtlsCfg.WithDefaultServerName("ledger-core").DialOption()
+	if err != nil {
+		return nil, fmt.Errorf("mTLS dial option for ledger-core: %w", err)
+	}
+	ledgerConn, err := grpc.NewClient(ledgerAddr, append([]grpc.DialOption{ledgerDialOpt}, commonDialOpts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("dial ledger-core at %s: %w", ledgerAddr, err)
 	}
 
-	gatewayConn, err := grpc.NewClient(gatewayAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	gatewayDialOpt, err := mtlsCfg.WithDefaultServerName("gateway").DialOption()
+	if err != nil {
+		_ = ledgerConn.Close()
+		return nil, fmt.Errorf("mTLS dial option for gateway: %w", err)
+	}
+	gatewayConn, err := grpc.NewClient(gatewayAddr, append([]grpc.DialOption{gatewayDialOpt}, commonDialOpts...)...)
 	if err != nil {
 		_ = ledgerConn.Close()
 		return nil, fmt.Errorf("dial gateway at %s: %w", gatewayAddr, err)

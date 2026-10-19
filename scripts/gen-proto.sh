@@ -13,7 +13,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # these package subdirectories.
 MODULE="github.com/caelum0x/ration"
 mkdir -p "$ROOT/pkg/pb"
-export PATH="$PATH:$(go env GOPATH)/bin"
+GOBIN_DIR="$(go env GOPATH)/bin"
+export PATH="$PATH:$GOBIN_DIR"
 
 if ! command -v protoc-gen-go >/dev/null 2>&1; then
   echo "installing protoc-gen-go / protoc-gen-go-grpc..."

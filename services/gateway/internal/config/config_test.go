@@ -5,70 +5,59 @@ import "testing"
 func clearEnv(t *testing.T) {
 	t.Helper()
 	keys := []string{
-		"AIRWALLEX_MODE", "AIRWALLEX_CLIENT_ID", "AIRWALLEX_API_KEY",
-		"AIRWALLEX_BASE_URL", "AIRWALLEX_WEBHOOK_SECRET", "LEDGER_CORE_ADDR",
-		"GATEWAY_GRPC_ADDR", "GATEWAY_HTTP_ADDR", "RATION_DATA_DIR",
-		"RATION_BRIDGE_MAX_FRACTION", "RATION_BRIDGE_MIN_GRANT_MINOR_UNITS",
-		"RATION_BRIDGE_VELOCITY_WINDOW_HOURS",
+		"LEDGER_CORE_ADDR", "CARD_ISSUANCE_ADDR", "WEBHOOK_INGESTION_ADDR",
+		"GATEWAY_GRPC_ADDR", "GATEWAY_METRICS_ADDR",
+		"RATION_RATELIMIT_RPS", "RATION_RATELIMIT_BURST",
+		"RATION_RATELIMIT_SWEEP_INTERVAL_MINUTES",
 	}
 	for _, k := range keys {
 		t.Setenv(k, "")
 	}
 }
 
-func TestLoad_MockModeDefaults(t *testing.T) {
+func TestLoad_Defaults(t *testing.T) {
 	clearEnv(t)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
-	if cfg.AirwallexMode != ModeMock {
-		t.Errorf("AirwallexMode = %q, want %q", cfg.AirwallexMode, ModeMock)
+	if cfg.LedgerCoreAddr != "localhost:7001" {
+		t.Errorf("LedgerCoreAddr = %q, want localhost:7001", cfg.LedgerCoreAddr)
 	}
-	if cfg.BridgeMaxFraction != 0.6 {
-		t.Errorf("BridgeMaxFraction = %v, want 0.6", cfg.BridgeMaxFraction)
+	if cfg.CardIssuanceAddr != "localhost:7012" {
+		t.Errorf("CardIssuanceAddr = %q, want localhost:7012", cfg.CardIssuanceAddr)
 	}
-	if cfg.BridgeMinGrantMinorUnits != 500 {
-		t.Errorf("BridgeMinGrantMinorUnits = %v, want 500", cfg.BridgeMinGrantMinorUnits)
+	if cfg.WebhookIngestionAddr != "localhost:7013" {
+		t.Errorf("WebhookIngestionAddr = %q, want localhost:7013", cfg.WebhookIngestionAddr)
 	}
-}
-
-func TestLoad_LiveModeRequiresCredentials(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("AIRWALLEX_MODE", "live")
-	if _, err := Load(); err == nil {
-		t.Fatal("Load() expected error for live mode missing credentials, got nil")
+	if cfg.RateLimitRPS != 20 {
+		t.Errorf("RateLimitRPS = %v, want 20", cfg.RateLimitRPS)
+	}
+	if cfg.RateLimitBurst != 40 {
+		t.Errorf("RateLimitBurst = %v, want 40", cfg.RateLimitBurst)
 	}
 }
 
-func TestLoad_LiveModeWithCredentials(t *testing.T) {
+func TestLoad_OverridesFromEnv(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("AIRWALLEX_MODE", "live")
-	t.Setenv("AIRWALLEX_CLIENT_ID", "client-123")
-	t.Setenv("AIRWALLEX_API_KEY", "key-123")
-	t.Setenv("AIRWALLEX_WEBHOOK_SECRET", "secret-123")
-	t.Setenv("AIRWALLEX_BASE_URL", "https://api-demo.airwallex.com")
+	t.Setenv("CARD_ISSUANCE_ADDR", "card-issuance:7012")
+	t.Setenv("WEBHOOK_INGESTION_ADDR", "webhook-ingestion:7013")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
-	if cfg.AirwallexMode != ModeLive {
-		t.Errorf("AirwallexMode = %q, want %q", cfg.AirwallexMode, ModeLive)
+	if cfg.CardIssuanceAddr != "card-issuance:7012" {
+		t.Errorf("CardIssuanceAddr = %q, want card-issuance:7012", cfg.CardIssuanceAddr)
+	}
+	if cfg.WebhookIngestionAddr != "webhook-ingestion:7013" {
+		t.Errorf("WebhookIngestionAddr = %q, want webhook-ingestion:7013", cfg.WebhookIngestionAddr)
 	}
 }
 
-func TestLoad_InvalidMode(t *testing.T) {
+func TestLoad_InvalidRateLimitRPS(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("AIRWALLEX_MODE", "bogus")
+	t.Setenv("RATION_RATELIMIT_RPS", "not-a-number")
 	if _, err := Load(); err == nil {
-		t.Fatal("Load() expected error for invalid mode, got nil")
-	}
-}
-
-func TestLoad_InvalidBridgeFraction(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("RATION_BRIDGE_MAX_FRACTION", "1.5")
-	if _, err := Load(); err == nil {
-		t.Fatal("Load() expected error for out-of-range bridge fraction, got nil")
+		t.Fatal("Load() expected error for invalid RATION_RATELIMIT_RPS, got nil")
 	}
 }

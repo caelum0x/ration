@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -13,10 +14,12 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/caelum0x/ration/pkg/metrics"
+	"github.com/caelum0x/ration/pkg/mtls"
 	gateway "github.com/caelum0x/ration/pkg/pb/gateway"
 	ledger "github.com/caelum0x/ration/pkg/pb/ledger"
+	"github.com/caelum0x/ration/pkg/telemetry"
 
 	"github.com/caelum0x/ration/services/agent/internal/ledgerclient"
 	"github.com/caelum0x/ration/services/agent/internal/llm"
@@ -28,10 +31,14 @@ const (
 	defaultLedgerCoreAddr = "localhost:7001"
 	defaultGatewayAddr    = "localhost:7002"
 	defaultPollInterval   = 10 * time.Second
+	defaultMetricsAddr    = "localhost:9093"
+
+	serviceName    = "agent"
+	serviceVersion = "0.1.0"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := telemetry.NewLogger(serviceName)
 	slog.SetDefault(logger)
 
 	if err := run(logger); err != nil {
@@ -41,6 +48,35 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	bootCtx := context.Background()
+
+	shutdownTelemetry, err := telemetry.Setup(bootCtx, serviceName, serviceVersion)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(shutdownCtx); err != nil {
+			logger.Error("telemetry shutdown failed", "error", err)
+		}
+	}()
+
+	met := metrics.New(serviceName)
+	metricsAddr := envOrDefault("RATION_AGENT_METRICS_ADDR", defaultMetricsAddr)
+	metricsSrv := met.Server(metricsAddr)
+	go func() {
+		logger.Info("agent metrics server listening", "addr", metricsAddr)
+		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("metrics server exited with error", "error", err)
+		}
+	}()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = metricsSrv.Shutdown(shutdownCtx)
+	}()
+
 	ledgerAddr := envOrDefault("LEDGER_CORE_ADDR", defaultLedgerCoreAddr)
 	gatewayAddr := envOrDefault("GATEWAY_GRPC_ADDR", defaultGatewayAddr)
 	pollInterval := pollIntervalFromEnv(logger)
@@ -49,13 +85,40 @@ func run(logger *slog.Logger) error {
 		logger.Warn("ANTHROPIC_API_KEY is not set; LLM calls will fail until it is configured")
 	}
 
-	ledgerConn, err := grpc.NewClient(ledgerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// mTLS (see docs/SCALE-EXPANSION.md section 8, pkg/mtls,
+	// infra/dev-ca/) is opt-in and disabled by default — with no
+	// AGENT_MTLS_* env vars set, mtlsCfg.Enabled is false and every
+	// DialOption() below falls back to plaintext, so a bare `go run`
+	// keeps working with zero certs on disk. The agent dials two
+	// different peers with its one identity, so the server name to
+	// verify each peer's certificate against is set per dial (see
+	// mtls.Config.WithDefaultServerName) rather than once.
+	mtlsCfg, err := mtls.LoadFromEnv("AGENT")
+	if err != nil {
+		return err
+	}
+
+	commonDialOpts := []grpc.DialOption{
+		telemetry.DialOption(),
+		grpc.WithChainUnaryInterceptor(telemetry.UnaryClientInterceptor()),
+		grpc.WithChainStreamInterceptor(telemetry.StreamClientInterceptor()),
+	}
+
+	ledgerDialOpt, err := mtlsCfg.WithDefaultServerName("ledger-core").DialOption()
+	if err != nil {
+		return err
+	}
+	ledgerConn, err := grpc.NewClient(ledgerAddr, append([]grpc.DialOption{ledgerDialOpt}, commonDialOpts...)...)
 	if err != nil {
 		return err
 	}
 	defer ledgerConn.Close()
 
-	gatewayConn, err := grpc.NewClient(gatewayAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	gatewayDialOpt, err := mtlsCfg.WithDefaultServerName("gateway").DialOption()
+	if err != nil {
+		return err
+	}
+	gatewayConn, err := grpc.NewClient(gatewayAddr, append([]grpc.DialOption{gatewayDialOpt}, commonDialOpts...)...)
 	if err != nil {
 		return err
 	}
@@ -98,9 +161,17 @@ func run(logger *slog.Logger) error {
 	}
 }
 
+// tick runs one poll-and-decide cycle as the root of its own trace and
+// correlation ID: everything this tick causes downstream (RPCs to
+// ledger-core and gateway, which themselves call ledger-core) carries
+// the same trace/correlation ID all the way through, so one tick's full
+// fan-out is visible as a single trace in Grafana/Tempo and a single
+// grep in aggregated logs.
 func tick(ctx context.Context, runner *loop.Runner, logger *slog.Logger) {
-	if err := runner.Tick(ctx); err != nil {
-		logger.Error("tick failed", "error", err)
+	ctx = telemetry.ContextWithCorrelationID(ctx, telemetry.NewCorrelationID())
+	err := telemetry.WithSpan(ctx, "agent", "agent.tick", runner.Tick)
+	if err != nil {
+		logger.LogAttrs(ctx, slog.LevelError, "tick failed", append(telemetry.LogAttrs(ctx), slog.String("error", err.Error()))...)
 	}
 }
 

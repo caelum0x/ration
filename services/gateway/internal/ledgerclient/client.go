@@ -16,8 +16,12 @@ import (
 )
 
 // Client wraps a LedgerCoreClient gRPC stub with a Go-idiomatic method
-// per RPC, so callers in internal/bridge, internal/card and
-// internal/tenant don't touch raw pb types or context plumbing directly.
+// per RPC, so callers in internal/grpcserver don't touch raw pb types or
+// context plumbing directly. The gateway's only remaining direct
+// ledger-core dependency, post section-1 split, is SimulateDeposit (see
+// internal/grpcserver's doc comment) — everything card/bridge-related
+// now goes through internal/cardissuanceclient to services/card-issuance
+// instead.
 type Client struct {
 	conn    *grpc.ClientConn
 	stub    ledgerpb.LedgerCoreClient
@@ -27,11 +31,19 @@ type Client struct {
 // Dial connects to ledger-core at addr. The connection is lazy (gRPC only
 // actually dials on first RPC) but we still validate addr is non-empty
 // here so misconfiguration fails at startup, not on the first request.
-func Dial(addr string) (*Client, error) {
+//
+// extraOpts are applied after a plaintext-insecure default transport
+// credential, so a caller passing its own grpc.WithTransportCredentials
+// (e.g. pkg/mtls's Config.DialOption(), for mTLS to ledger-core) simply
+// overrides the default rather than needing this function to know
+// anything about mTLS itself. Any other DialOption (interceptors,
+// telemetry, …) is applied as given.
+func Dial(addr string, extraOpts ...grpc.DialOption) (*Client, error) {
 	if addr == "" {
 		return nil, fmt.Errorf("ledgerclient: addr must not be empty")
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	opts := append([]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}, extraOpts...)
+	conn, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("ledgerclient: dial %s: %w", addr, err)
 	}

@@ -3,7 +3,12 @@ go 1.24.4
 use (
 	./pkg
 	./services/agent
+	./services/audit-log
+	./services/auth
+	./services/card-issuance
 	./services/cli
 	./services/gateway
+	./services/tenant-registry
 	./services/tui
+	./services/webhook-ingestion
 )

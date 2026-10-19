@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package ration.auth.v1;
+
+option go_package = "github.com/caelum0x/ration/pkg/pb/auth";
+
+// Auth is an internal-only service (docs/SCALE-EXPANSION.md section 1):
+// tenant API-key issuance/verification, JWT minting/verification for the
+// TUI/CLI, and mTLS client-cert issuance for service-to-service calls.
+// Nothing in gateway.proto (the one public aggregate surface) changes
+// because of this service existing — it is new capability, not an
+// extraction of existing gateway behavior (see docs/adr/0004).
+service Auth {
+  // IssueAPIKey mints a new API key for a tenant. The plaintext secret is
+  // only ever returned in this response — only its salted hash is kept,
+  // so a leaked store (or log) can never be replayed into a working key.
+  rpc IssueAPIKey(IssueAPIKeyRequest) returns (IssueAPIKeyResponse);
+  // VerifyAPIKey checks a presented secret against the stored hash and
+  // reports whether it is valid (and not revoked), and if so, which
+  // tenant it authenticates.
+  rpc VerifyAPIKey(VerifyAPIKeyRequest) returns (VerifyAPIKeyResponse);
+  // RevokeAPIKey immediately invalidates a key; VerifyAPIKey will report
+  // it invalid from that point on, even if the secret is still correct.
+  rpc RevokeAPIKey(RevokeAPIKeyRequest) returns (RevokeAPIKeyResponse);
+
+  // MintJWT issues a signed, short-lived bearer token for a subject
+  // (e.g. a human operator driving the TUI/CLI) scoped to a tenant.
+  rpc MintJWT(MintJWTRequest) returns (MintJWTResponse);
+  // VerifyJWT checks a token's signature and expiry and reports the
+  // claims it was minted with.
+  rpc VerifyJWT(VerifyJWTRequest) returns (VerifyJWTResponse);
+
+  // IssueServiceCert signs a service's certificate signing request (CSR)
+  // against this service's internal CA, returning a leaf certificate a
+  // service can present for mTLS (see pkg/mtls, infra/dev-ca/). Unlike
+  // infra/dev-ca/generate-dev-ca.sh's static, offline cert generation,
+  // this is runtime issuance: a service can request (or be issued, via
+  // an operator-driven rotation) a fresh short-lived cert without a
+  // redeploy, and a compromised service's cert can be left to expire
+  // (or, with a future CRL/OCSP addition, revoked) without touching
+  // every other service's identity.
+  rpc IssueServiceCert(IssueServiceCertRequest) returns (IssueServiceCertResponse);
+}
+
+message IssueAPIKeyRequest {
+  string tenant_id = 1;
+  string name = 2; // human-readable label, e.g. "ration CLI, Ada's laptop"
+}
+
+message IssueAPIKeyResponse {
+  string key_id = 1;
+  string tenant_id = 2;
+  // secret is the plaintext API key. Returned exactly once, at issuance
+  // — Auth never stores or returns it again.
+  string secret = 3;
+  int64 created_at_unix = 4;
+}
+
+message VerifyAPIKeyRequest {
+  string secret = 1;
+}
+
+message VerifyAPIKeyResponse {
+  bool valid = 1;
+  string key_id = 2;
+  string tenant_id = 3;
+  // reason explains an invalid result (e.g. "revoked", "not found"); empty when valid.
+  string reason = 4;
+}
+
+message RevokeAPIKeyRequest {
+  string key_id = 1;
+}
+
+message RevokeAPIKeyResponse {
+  bool revoked = 1;
+}
+
+message MintJWTRequest {
+  string subject = 1;
+  string tenant_id = 2;
+  int64 ttl_seconds = 3; // 0 = server default (see services/auth/internal/jwt)
+}
+
+message MintJWTResponse {
+  string token = 1;
+  int64 expires_at_unix = 2;
+}
+
+message VerifyJWTRequest {
+  string token = 1;
+}
+
+message VerifyJWTResponse {
+  bool valid = 1;
+  string subject = 2;
+  string tenant_id = 3;
+  string reason = 4; // explains an invalid result (e.g. "expired", "bad signature")
+}
+
+message IssueServiceCertRequest {
+  string service_name = 1; // SAN the issued cert will carry, e.g. "card-issuance"
+  // csr_pem is a PEM-encoded PKCS#10 certificate signing request. The
+  // service generates and keeps its own private key; only the CSR
+  // (public key + requested SAN) ever crosses this RPC.
+  bytes csr_pem = 2;
+  int64 ttl_seconds = 3; // 0 = server default
+}
+
+message IssueServiceCertResponse {
+  bytes cert_pem = 1; // the signed leaf certificate
+  bytes ca_pem = 2;   // the issuing CA certificate, for building a trust pool
+  int64 expires_at_unix = 3;
+}

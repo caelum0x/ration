@@ -2,6 +2,14 @@
 // API plus the agentic tool-calling loop built on top of it. There is no
 // Anthropic SDK dependency here by design — this talks to
 // https://api.anthropic.com/v1/messages directly over net/http.
+//
+// Optionally, calls can instead be routed through Railyard's Relay gateway
+// (a sibling product, ~/products/railyard/apps/relay) by setting
+// RATION_LLM_GATEWAY_URL. Relay's client-facing surface is OpenAI-compatible
+// chat.completions, not the Anthropic Messages wire format, so that path
+// translates at the transport boundary — see gateway.go. See
+// docs/AGENT-DESIGN.md for why (metering/budget enforcement via Railyard's
+// Abacus) and exactly what is wired versus a documented TODO.
 package llm
 
 import (
@@ -22,6 +30,39 @@ const (
 	defaultMaxTokens         = 4096
 	defaultMaxToolIterations = 8
 	defaultHTTPTimeout       = 60 * time.Second
+
+	// gatewayURLEnvVar, when set, routes every LLM call through Railyard's
+	// Relay gateway instead of directly to Anthropic. It is deliberately
+	// NOT defaulted to a non-empty value in code: Railyard's Relay has no
+	// confirmed-reachable production URL from this sandbox (see gateway.go
+	// package doc and docs/AGENT-DESIGN.md), and defaulting to any
+	// non-empty URL would make the existing, working, tested direct-
+	// Anthropic path silently start trying to call a gateway that may not
+	// exist in a given environment. Leaving it unset preserves the
+	// existing behavior exactly.
+	//
+	// For local development against a Railyard Relay quickstart (confirmed
+	// from ~/products/railyard/apps/relay/README.md and
+	// docker-compose.quickstart.yml: `docker compose -f
+	// docker-compose.quickstart.yml up --build`, OpenAI-compatible API
+	// served on port 3000 under /openai/v1), set this to:
+	//   http://localhost:3000/openai/v1
+	gatewayURLEnvVar = "RATION_LLM_GATEWAY_URL"
+
+	// gatewayModelEnvVar selects which Relay/TensorZero model or function
+	// selector to request (e.g. "tensorzero::model_name::claude-sonnet" or
+	// "tensorzero::function_name::chat") — see gateway.go's gatewayModel
+	// doc comment for why this can't be defaulted sensibly either.
+	gatewayModelEnvVar = "RATION_LLM_GATEWAY_MODEL"
+
+	// gatewayAPIKeyEnvVar carries the bearer token Relay expects as
+	// `Authorization: Bearer <token>` (confirmed from
+	// apps/relay/docs/gateway/configuration-reference.mdx and
+	// apps/relay/examples/relay/openai-client/README.md). Left unset, no
+	// Authorization header is sent, which only works against a Relay
+	// instance running with `[gateway.auth] enabled = false` (e.g. the
+	// quickstart config).
+	gatewayAPIKeyEnvVar = "RATION_LLM_GATEWAY_API_KEY"
 )
 
 // ContentBlock is one block of a message's content array. The Anthropic
@@ -78,7 +119,8 @@ type Provider interface {
 }
 
 // AnthropicProvider is the real Provider backed by the Anthropic Messages
-// API over plain net/http.
+// API over plain net/http, or (when GatewayURL is set) by Railyard's Relay
+// gateway — see gateway.go.
 type AnthropicProvider struct {
 	HTTPClient        *http.Client
 	APIKey            string
@@ -87,12 +129,30 @@ type AnthropicProvider struct {
 	AnthropicVersion  string
 	MaxTokens         int
 	MaxToolIterations int
+
+	// GatewayURL, when non-empty, routes calls through Railyard's Relay
+	// gateway instead of directly to Anthropic (see gateway.go). It is the
+	// base URL up to and including the OpenAI-compatible path prefix (e.g.
+	// "http://localhost:3000/openai/v1"); "/chat/completions" is appended.
+	GatewayURL string
+	// GatewayModel is the Relay/TensorZero model or function selector to
+	// request. Falls back to Model if empty (see gatewayModel in
+	// gateway.go for why that fallback is best-effort, not guaranteed).
+	GatewayModel string
+	// GatewayAPIKey, when non-empty, is sent as `Authorization: Bearer
+	// <GatewayAPIKey>` to Relay. Unused when GatewayURL is empty.
+	GatewayAPIKey string
 }
 
 // NewAnthropicProviderFromEnv builds an AnthropicProvider from environment
-// variables: ANTHROPIC_API_KEY (required for real calls — an empty key is
-// allowed to construct the provider but every call will fail with a clear
-// error) and RATION_AGENT_MODEL (default "claude-sonnet-5").
+// variables: ANTHROPIC_API_KEY (required for real direct-Anthropic calls —
+// an empty key is allowed to construct the provider but every call will
+// fail with a clear error), RATION_AGENT_MODEL (default
+// "claude-sonnet-5"), and the optional Railyard Relay gateway settings
+// RATION_LLM_GATEWAY_URL, RATION_LLM_GATEWAY_MODEL, and
+// RATION_LLM_GATEWAY_API_KEY (see the gatewayURLEnvVar doc comment above —
+// leaving RATION_LLM_GATEWAY_URL unset preserves the original
+// direct-to-Anthropic behavior exactly).
 func NewAnthropicProviderFromEnv() *AnthropicProvider {
 	model := os.Getenv("RATION_AGENT_MODEL")
 	if model == "" {
@@ -107,6 +167,9 @@ func NewAnthropicProviderFromEnv() *AnthropicProvider {
 		AnthropicVersion:  defaultAnthropicVersion,
 		MaxTokens:         defaultMaxTokens,
 		MaxToolIterations: defaultMaxToolIterations,
+		GatewayURL:        os.Getenv(gatewayURLEnvVar),
+		GatewayModel:      os.Getenv(gatewayModelEnvVar),
+		GatewayAPIKey:     os.Getenv(gatewayAPIKeyEnvVar),
 	}
 }
 
@@ -148,7 +211,21 @@ func (e *APIError) Retryable() bool {
 	return e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
 }
 
+// createMessage dispatches to Railyard's Relay gateway when GatewayURL is
+// configured, falling back to a direct Anthropic Messages API call
+// otherwise. This is the only branch point between the two transports —
+// RunConversation and everything above it is identical either way.
 func (p *AnthropicProvider) createMessage(ctx context.Context, req messagesRequest) (*messagesResponse, error) {
+	if p.GatewayURL != "" {
+		return p.createMessageViaGateway(ctx, req)
+	}
+	return p.createMessageDirect(ctx, req)
+}
+
+// createMessageDirect calls the Anthropic Messages API directly. This is
+// the original, unmodified code path (pre-gateway-routing) — see
+// createMessageViaGateway in gateway.go for the Railyard Relay path.
+func (p *AnthropicProvider) createMessageDirect(ctx context.Context, req messagesRequest) (*messagesResponse, error) {
 	if p.APIKey == "" {
 		return nil, fmt.Errorf("llm: ANTHROPIC_API_KEY is not set")
 	}
@@ -175,6 +252,25 @@ func (p *AnthropicProvider) createMessage(ctx context.Context, req messagesReque
 	httpReq.Header.Set("x-api-key", p.APIKey)
 	httpReq.Header.Set("anthropic-version", version)
 
+	respBody, err := p.sendWithRetry(ctx, httpReq)
+	if err != nil {
+		return nil, err
+	}
+
+	var parsed messagesResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, fmt.Errorf("llm: decode response: %w", err)
+	}
+	return &parsed, nil
+}
+
+// sendWithRetry executes httpReq (cloned per attempt so retries get a fresh
+// body reader) up to 3 attempts with linear backoff, retrying only on
+// retryable API errors (429, 5xx) or transport-level failures. It returns
+// the raw 2xx response body. Shared by both the direct-Anthropic and
+// Relay-gateway transports so the retry/backoff behavior is identical and
+// defined in exactly one place.
+func (p *AnthropicProvider) sendWithRetry(ctx context.Context, httpReq *http.Request) ([]byte, error) {
 	client := p.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: defaultHTTPTimeout}
@@ -212,11 +308,7 @@ func (p *AnthropicProvider) createMessage(ctx context.Context, req messagesReque
 			return nil, apiErr
 		}
 
-		var parsed messagesResponse
-		if err := json.Unmarshal(respBody, &parsed); err != nil {
-			return nil, fmt.Errorf("llm: decode response: %w", err)
-		}
-		return &parsed, nil
+		return respBody, nil
 	}
 
 	return nil, fmt.Errorf("llm: request failed after retries: %w", lastErr)

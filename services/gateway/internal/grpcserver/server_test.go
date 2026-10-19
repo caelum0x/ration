@@ -2,59 +2,30 @@ package grpcserver
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
-	commonpb "github.com/caelum0x/ration/pkg/pb/common"
+	cardissuancepb "github.com/caelum0x/ration/pkg/pb/cardissuance"
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
 	"github.com/caelum0x/ration/services/gateway/internal/activity"
-	"github.com/caelum0x/ration/services/gateway/internal/airwallex"
-	"github.com/caelum0x/ration/services/gateway/internal/bridge"
-	"github.com/caelum0x/ration/services/gateway/internal/card"
 	"google.golang.org/grpc/metadata"
 )
 
-// fakeLedger implements every narrow LedgerClient interface used across
-// card, bridge and grpcserver so a single fake can back an end-to-end
-// Server in tests, with no gRPC and no network.
+// fakeLedger implements the narrow LedgerClient interface SimulateDeposit
+// needs, with no gRPC and no network.
 type fakeLedger struct {
-	tenant   *ledgerpb.Tenant
-	balance  *ledgerpb.Balance
-	deposits []*ledgerpb.Deposit
-	entries  []*ledgerpb.LedgerEntry
+	tenant *ledgerpb.Tenant
 
 	recordedDeposits []*ledgerpb.RecordDepositRequest
-	appliedEntries   []*ledgerpb.ApplyEntryRequest
-	nextDepositID    int
 }
 
 func (f *fakeLedger) GetTenant(ctx context.Context, tenantID string) (*ledgerpb.Tenant, error) {
 	return f.tenant, nil
 }
-func (f *fakeLedger) GetBalance(ctx context.Context, tenantID string) (*ledgerpb.Balance, error) {
-	return f.balance, nil
-}
-func (f *fakeLedger) ListDeposits(ctx context.Context, tenantID string) ([]*ledgerpb.Deposit, error) {
-	return f.deposits, nil
-}
-func (f *fakeLedger) ListEntries(ctx context.Context, tenantID string) ([]*ledgerpb.LedgerEntry, error) {
-	return f.entries, nil
-}
-func (f *fakeLedger) CheckReserveFloor(ctx context.Context, tenantID string, proposedDebitMinorUnits int64) (*ledgerpb.CheckReserveFloorResponse, error) {
-	headroom := f.balance.GetAvailableMinorUnits() - f.tenant.GetReserveFloorMinorUnits()
-	return &ledgerpb.CheckReserveFloorResponse{Allowed: proposedDebitMinorUnits <= headroom, HeadroomMinorUnits: headroom}, nil
-}
-func (f *fakeLedger) ApplyEntry(ctx context.Context, req *ledgerpb.ApplyEntryRequest) (*ledgerpb.ApplyEntryResponse, error) {
-	f.appliedEntries = append(f.appliedEntries, req)
-	return &ledgerpb.ApplyEntryResponse{Entry: &ledgerpb.LedgerEntry{Id: "entry_test"}}, nil
-}
-func (f *fakeLedger) RecordAgentDecision(ctx context.Context, req *ledgerpb.RecordAgentDecisionRequest) (*ledgerpb.AgentDecision, error) {
-	return &ledgerpb.AgentDecision{Id: "decision_test"}, nil
-}
 func (f *fakeLedger) RecordDeposit(ctx context.Context, req *ledgerpb.RecordDepositRequest) (*ledgerpb.Deposit, error) {
 	f.recordedDeposits = append(f.recordedDeposits, req)
-	f.nextDepositID++
 	return &ledgerpb.Deposit{
 		Id:             "dep_test",
 		TenantId:       req.GetTenantId(),
@@ -64,20 +35,88 @@ func (f *fakeLedger) RecordDeposit(ctx context.Context, req *ledgerpb.RecordDepo
 	}, nil
 }
 
-func newTestServer(f *fakeLedger) *Server {
-	aw := airwallex.NewMock("secret")
-	cardSvc := card.New(aw, f)
-	bridgeSvc := bridge.New(f, bridge.DefaultPolicy())
+// fakeCardIssuance implements the narrow CardIssuanceClient interface
+// server.go depends on, with no gRPC and no network — this is the one
+// seam the section-1 split added (docs/SCALE-EXPANSION.md), standing in
+// for a real services/card-issuance dial the way fakeLedger stands in
+// for a real ledger-core dial.
+type fakeCardIssuance struct {
+	cards      map[string]*cardissuancepb.Card
+	nextCardID int
+
+	bridgeGrantedMinorUnits int64
+	bridgeFullyGranted      bool
+	bridgeExplanation       string
+}
+
+func (f *fakeCardIssuance) IssueCard(ctx context.Context, req *cardissuancepb.IssueCardRequest) (*cardissuancepb.Card, error) {
+	if f.cards == nil {
+		f.cards = map[string]*cardissuancepb.Card{}
+	}
+	f.nextCardID++
+	c := &cardissuancepb.Card{
+		Id:              fmt.Sprintf("card_%d", f.nextCardID),
+		TenantId:        req.GetTenantId(),
+		CardholderName:  req.GetCardholderName(),
+		LimitMinorUnits: req.GetLimitMinorUnits(),
+		LimitInterval:   req.GetLimitInterval(),
+		Currency:        req.GetCurrency(),
+	}
+	f.cards[c.Id] = c
+	return c, nil
+}
+
+func (f *fakeCardIssuance) AdjustCardLimit(ctx context.Context, req *cardissuancepb.AdjustCardLimitRequest) (*cardissuancepb.Card, error) {
+	c, ok := f.cards[req.GetCardId()]
+	if !ok {
+		return nil, fmt.Errorf("card %s not found", req.GetCardId())
+	}
+	c.LimitMinorUnits = req.GetNewLimitMinorUnits()
+	return c, nil
+}
+
+func (f *fakeCardIssuance) GetCard(ctx context.Context, cardID string) (*cardissuancepb.Card, error) {
+	c, ok := f.cards[cardID]
+	if !ok {
+		return nil, fmt.Errorf("card %s not found", cardID)
+	}
+	return c, nil
+}
+
+func (f *fakeCardIssuance) ListCards(ctx context.Context, tenantID string) ([]*cardissuancepb.Card, error) {
+	var out []*cardissuancepb.Card
+	for _, c := range f.cards {
+		if c.GetTenantId() == tenantID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeCardIssuance) RationBridgeFunding(ctx context.Context, req *cardissuancepb.RationBridgeFundingRequest) (*cardissuancepb.RationBridgeFundingResponse, error) {
+	granted := f.bridgeGrantedMinorUnits
+	if granted == 0 {
+		granted = req.GetRequestedMinorUnits()
+	}
+	explanation := f.bridgeExplanation
+	if explanation == "" {
+		explanation = "granted in full (fake)"
+	}
+	return &cardissuancepb.RationBridgeFundingResponse{
+		GrantedMinorUnits: granted,
+		FullyGranted:      f.bridgeFullyGranted || granted == req.GetRequestedMinorUnits(),
+		Explanation:       explanation,
+	}, nil
+}
+
+func newTestServer(ledger *fakeLedger, cards *fakeCardIssuance) *Server {
 	bus := activity.NewBus()
-	return New(cardSvc, bridgeSvc, f, bus)
+	return New(cards, ledger, bus)
 }
 
 func TestServer_IssueCardAndGetCard(t *testing.T) {
-	f := &fakeLedger{
-		tenant:  &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD", ReserveFloorMinorUnits: 1000},
-		balance: &ledgerpb.Balance{TenantId: "tenant_1", AvailableMinorUnits: 100000},
-	}
-	srv := newTestServer(f)
+	ledger := &fakeLedger{tenant: &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD", ReserveFloorMinorUnits: 1000}}
+	srv := newTestServer(ledger, &fakeCardIssuance{})
 
 	card, err := srv.IssueCard(context.Background(), &gatewaypb.IssueCardRequest{
 		TenantId:        "tenant_1",
@@ -106,25 +145,33 @@ func TestServer_IssueCardAndGetCard(t *testing.T) {
 	}
 }
 
-func TestServer_RationBridgeFunding_PublishesActivity(t *testing.T) {
-	f := &fakeLedger{
-		tenant:  &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD", ReserveFloorMinorUnits: 1000},
-		balance: &ledgerpb.Balance{TenantId: "tenant_1", AvailableMinorUnits: 5000},
-		deposits: []*ledgerpb.Deposit{
-			{
-				Id:             "dep_1",
-				TenantId:       "tenant_1",
-				ExpectedAmount: &commonpb.Money{MinorUnits: 100000, Currency: "USD"},
-				ExpectedAtUnix: time.Now().Add(-time.Hour).Unix(),
-				Status:         commonpb.DepositStatus_DEPOSIT_STATUS_LATE,
-			},
-		},
+func TestServer_AdjustCardLimit(t *testing.T) {
+	ledger := &fakeLedger{tenant: &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD"}}
+	srv := newTestServer(ledger, &fakeCardIssuance{})
+
+	card, err := srv.IssueCard(context.Background(), &gatewaypb.IssueCardRequest{
+		TenantId: "tenant_1", CardholderName: "Ada", LimitMinorUnits: 1000, Currency: "USD",
+	})
+	if err != nil {
+		t.Fatalf("IssueCard() error = %v", err)
 	}
-	aw := airwallex.NewMock("secret")
-	cardSvc := card.New(aw, f)
-	bridgeSvc := bridge.New(f, bridge.DefaultPolicy())
+
+	updated, err := srv.AdjustCardLimit(context.Background(), &gatewaypb.AdjustCardLimitRequest{
+		CardId: card.GetId(), NewLimitMinorUnits: 2000, Reason: "raise",
+	})
+	if err != nil {
+		t.Fatalf("AdjustCardLimit() error = %v", err)
+	}
+	if updated.GetLimitMinorUnits() != 2000 {
+		t.Errorf("LimitMinorUnits = %d, want 2000", updated.GetLimitMinorUnits())
+	}
+}
+
+func TestServer_RationBridgeFunding_PublishesActivity(t *testing.T) {
+	ledger := &fakeLedger{tenant: &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD", ReserveFloorMinorUnits: 1000}}
+	cards := &fakeCardIssuance{bridgeGrantedMinorUnits: 4200, bridgeExplanation: "granted below full due to reserve floor"}
 	bus := activity.NewBus()
-	srv := New(cardSvc, bridgeSvc, f, bus)
+	srv := New(cards, ledger, bus)
 
 	ch, unsubscribe := bus.Subscribe("tenant_1")
 	defer unsubscribe()
@@ -137,8 +184,8 @@ func TestServer_RationBridgeFunding_PublishesActivity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RationBridgeFunding() error = %v", err)
 	}
-	if resp.GetGrantedMinorUnits() <= 0 {
-		t.Errorf("GrantedMinorUnits = %d, want > 0", resp.GetGrantedMinorUnits())
+	if resp.GetGrantedMinorUnits() != 4200 {
+		t.Errorf("GrantedMinorUnits = %d, want 4200", resp.GetGrantedMinorUnits())
 	}
 
 	select {
@@ -146,17 +193,17 @@ func TestServer_RationBridgeFunding_PublishesActivity(t *testing.T) {
 		if e.Kind != "agent_decision" {
 			t.Errorf("Kind = %q, want agent_decision", e.Kind)
 		}
+		if e.Summary != "granted below full due to reserve floor" {
+			t.Errorf("Summary = %q, want the bridge explanation", e.Summary)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for activity event")
 	}
 }
 
 func TestServer_SimulateDeposit(t *testing.T) {
-	f := &fakeLedger{
-		tenant:  &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD", ReserveFloorMinorUnits: 1000},
-		balance: &ledgerpb.Balance{TenantId: "tenant_1", AvailableMinorUnits: 100000},
-	}
-	srv := newTestServer(f)
+	ledger := &fakeLedger{tenant: &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD", ReserveFloorMinorUnits: 1000}}
+	srv := newTestServer(ledger, &fakeCardIssuance{})
 
 	resp, err := srv.SimulateDeposit(context.Background(), &gatewaypb.SimulateDepositRequest{
 		TenantId:         "tenant_1",
@@ -169,27 +216,39 @@ func TestServer_SimulateDeposit(t *testing.T) {
 	if resp.GetDepositId() == "" {
 		t.Error("DepositId is empty")
 	}
-	if len(f.recordedDeposits) != 1 {
-		t.Fatalf("len(recordedDeposits) = %d, want 1", len(f.recordedDeposits))
+	if len(ledger.recordedDeposits) != 1 {
+		t.Fatalf("len(recordedDeposits) = %d, want 1", len(ledger.recordedDeposits))
 	}
-	if f.recordedDeposits[0].GetExpectedAmount().GetMinorUnits() != 25000 {
-		t.Errorf("expected amount = %d, want 25000", f.recordedDeposits[0].GetExpectedAmount().GetMinorUnits())
+	if ledger.recordedDeposits[0].GetExpectedAmount().GetMinorUnits() != 25000 {
+		t.Errorf("expected amount = %d, want 25000", ledger.recordedDeposits[0].GetExpectedAmount().GetMinorUnits())
 	}
-	if f.recordedDeposits[0].GetExpectedAtUnix() >= time.Now().Unix() {
+	if ledger.recordedDeposits[0].GetExpectedAtUnix() >= time.Now().Unix() {
 		t.Error("mark_late=true should backdate expected_at_unix into the past")
 	}
 }
 
-func TestServer_StreamActivity_FiltersAndStopsOnContextCancel(t *testing.T) {
-	f := &fakeLedger{
-		tenant:  &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD", ReserveFloorMinorUnits: 1000},
-		balance: &ledgerpb.Balance{TenantId: "tenant_1", AvailableMinorUnits: 100000},
+func TestServer_SimulateDeposit_RejectsMissingTenant(t *testing.T) {
+	ledger := &fakeLedger{tenant: &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD"}}
+	srv := newTestServer(ledger, &fakeCardIssuance{})
+
+	if _, err := srv.SimulateDeposit(context.Background(), &gatewaypb.SimulateDepositRequest{AmountMinorUnits: 100}); err == nil {
+		t.Error("SimulateDeposit() with empty tenant_id expected error, got nil")
 	}
-	aw := airwallex.NewMock("secret")
-	cardSvc := card.New(aw, f)
-	bridgeSvc := bridge.New(f, bridge.DefaultPolicy())
+}
+
+func TestServer_SimulateDeposit_RejectsNonPositiveAmount(t *testing.T) {
+	ledger := &fakeLedger{tenant: &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD"}}
+	srv := newTestServer(ledger, &fakeCardIssuance{})
+
+	if _, err := srv.SimulateDeposit(context.Background(), &gatewaypb.SimulateDepositRequest{TenantId: "tenant_1", AmountMinorUnits: 0}); err == nil {
+		t.Error("SimulateDeposit() with amount=0 expected error, got nil")
+	}
+}
+
+func TestServer_StreamActivity_FiltersAndStopsOnContextCancel(t *testing.T) {
+	ledger := &fakeLedger{tenant: &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD"}}
 	bus := activity.NewBus()
-	srv := New(cardSvc, bridgeSvc, f, bus)
+	srv := New(&fakeCardIssuance{}, ledger, bus)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stream := &fakeActivityStream{ctx: ctx, received: make(chan *gatewaypb.ActivityEvent, 10)}

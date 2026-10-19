@@ -1,7 +1,16 @@
-// Package grpcserver implements gateway.proto's Gateway service,
-// wiring together internal/card, internal/bridge, internal/activity and
-// the ledger client. It is the one place that translates between wire
-// types (pkg/pb/gateway) and the internal service APIs.
+// Package grpcserver implements gateway.proto's Gateway service as a
+// thin BFF (docs/SCALE-EXPANSION.md section 1, docs/adr/0004): every
+// card and rationing-math RPC is a direct fan-out to services/card-issuance
+// over internal/cardissuanceclient, translated at this one edge between
+// cardissuance.* wire types and gateway.* wire types (which are
+// structurally identical by design — gateway.proto's Card/IssueCardRequest/
+// etc. messages are unchanged from before the split, so this translation
+// is a mechanical field-by-field copy, not new business logic). Deposit
+// simulation still talks to ledger-core directly (it always proxied
+// straight through here, with no gateway-side business logic beyond
+// defaulting expected_at_unix). StreamActivity serves this process's own
+// activity bus, which cmd/gateway/main.go also feeds from
+// services/webhook-ingestion's StreamEvents via internal/webhookeventsclient.
 package grpcserver
 
 import (
@@ -9,17 +18,27 @@ import (
 	"fmt"
 	"time"
 
+	cardissuancepb "github.com/caelum0x/ration/pkg/pb/cardissuance"
 	commonpb "github.com/caelum0x/ration/pkg/pb/common"
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
 	"github.com/caelum0x/ration/services/gateway/internal/activity"
-	"github.com/caelum0x/ration/services/gateway/internal/bridge"
-	"github.com/caelum0x/ration/services/gateway/internal/card"
 	"github.com/caelum0x/ration/services/gateway/internal/idgen"
 )
 
+// CardIssuanceClient is the subset of cardissuanceclient.Client the
+// gateway needs — a narrow interface so tests can supply a fake without
+// standing up a real gRPC server.
+type CardIssuanceClient interface {
+	IssueCard(ctx context.Context, req *cardissuancepb.IssueCardRequest) (*cardissuancepb.Card, error)
+	AdjustCardLimit(ctx context.Context, req *cardissuancepb.AdjustCardLimitRequest) (*cardissuancepb.Card, error)
+	GetCard(ctx context.Context, cardID string) (*cardissuancepb.Card, error)
+	ListCards(ctx context.Context, tenantID string) ([]*cardissuancepb.Card, error)
+	RationBridgeFunding(ctx context.Context, req *cardissuancepb.RationBridgeFundingRequest) (*cardissuancepb.RationBridgeFundingResponse, error)
+}
+
 // LedgerClient is the subset of ledgerclient.Client SimulateDeposit
-// needs (card/bridge take their own narrower interfaces).
+// needs.
 type LedgerClient interface {
 	RecordDeposit(ctx context.Context, req *ledgerpb.RecordDepositRequest) (*ledgerpb.Deposit, error)
 	GetTenant(ctx context.Context, tenantID string) (*ledgerpb.Tenant, error)
@@ -29,19 +48,18 @@ type LedgerClient interface {
 type Server struct {
 	gatewaypb.UnimplementedGatewayServer
 
-	cards  *card.Service
-	bridge *bridge.Service
+	cards  CardIssuanceClient
 	ledger LedgerClient
 	bus    *activity.Bus
 
 	newID func(prefix string) string
 }
 
-// New constructs a Server wiring the given services and event bus.
-func New(cards *card.Service, bridgeSvc *bridge.Service, ledger LedgerClient, bus *activity.Bus) *Server {
+// New constructs a Server wiring the given card-issuance client, ledger
+// client and activity bus.
+func New(cards CardIssuanceClient, ledger LedgerClient, bus *activity.Bus) *Server {
 	return &Server{
 		cards:  cards,
-		bridge: bridgeSvc,
 		ledger: ledger,
 		bus:    bus,
 		newID:  idgen.New,
@@ -55,29 +73,64 @@ func (s *Server) publish(tenantID, kind, summary string) {
 	s.bus.Publish(activity.NewEvent(tenantID, kind, summary))
 }
 
+// toGatewayCard copies a cardissuance.Card into gateway.proto's identical
+// Card message — the two protos define the same fields by design (see
+// this package's doc comment), so this is a straight field copy, not a
+// translation of meaning.
+func toGatewayCard(c *cardissuancepb.Card) *gatewaypb.Card {
+	if c == nil {
+		return nil
+	}
+	return &gatewaypb.Card{
+		Id:              c.GetId(),
+		TenantId:        c.GetTenantId(),
+		AirwallexCardId: c.GetAirwallexCardId(),
+		CardholderName:  c.GetCardholderName(),
+		Status:          c.GetStatus(),
+		LimitMinorUnits: c.GetLimitMinorUnits(),
+		LimitInterval:   c.GetLimitInterval(),
+		Currency:        c.GetCurrency(),
+		CreatedAtUnix:   c.GetCreatedAtUnix(),
+	}
+}
+
 // IssueCard implements gatewaypb.GatewayServer.
 func (s *Server) IssueCard(ctx context.Context, req *gatewaypb.IssueCardRequest) (*gatewaypb.Card, error) {
-	c, err := s.cards.IssueCard(ctx, req)
+	c, err := s.cards.IssueCard(ctx, &cardissuancepb.IssueCardRequest{
+		TenantId:        req.GetTenantId(),
+		CardholderName:  req.GetCardholderName(),
+		LimitMinorUnits: req.GetLimitMinorUnits(),
+		LimitInterval:   req.GetLimitInterval(),
+		Currency:        req.GetCurrency(),
+	})
 	if err != nil {
 		return nil, err
 	}
 	s.publish(req.GetTenantId(), "card", fmt.Sprintf("issued card %s for %s, limit %d %s", c.GetId(), req.GetCardholderName(), c.GetLimitMinorUnits(), c.GetCurrency()))
-	return c, nil
+	return toGatewayCard(c), nil
 }
 
 // AdjustCardLimit implements gatewaypb.GatewayServer.
 func (s *Server) AdjustCardLimit(ctx context.Context, req *gatewaypb.AdjustCardLimitRequest) (*gatewaypb.Card, error) {
-	c, err := s.cards.AdjustCardLimit(ctx, req)
+	c, err := s.cards.AdjustCardLimit(ctx, &cardissuancepb.AdjustCardLimitRequest{
+		CardId:             req.GetCardId(),
+		NewLimitMinorUnits: req.GetNewLimitMinorUnits(),
+		Reason:             req.GetReason(),
+	})
 	if err != nil {
 		return nil, err
 	}
 	s.publish(c.GetTenantId(), "card", fmt.Sprintf("adjusted card %s limit to %d %s (%s)", c.GetId(), c.GetLimitMinorUnits(), c.GetCurrency(), req.GetReason()))
-	return c, nil
+	return toGatewayCard(c), nil
 }
 
 // GetCard implements gatewaypb.GatewayServer.
 func (s *Server) GetCard(ctx context.Context, req *gatewaypb.GetCardRequest) (*gatewaypb.Card, error) {
-	return s.cards.GetCard(ctx, req.GetCardId())
+	c, err := s.cards.GetCard(ctx, req.GetCardId())
+	if err != nil {
+		return nil, err
+	}
+	return toGatewayCard(c), nil
 }
 
 // ListCards implements gatewaypb.GatewayServer.
@@ -86,27 +139,38 @@ func (s *Server) ListCards(ctx context.Context, req *gatewaypb.ListCardsRequest)
 	if err != nil {
 		return nil, err
 	}
-	return &gatewaypb.ListCardsResponse{Cards: cards}, nil
+	out := make([]*gatewaypb.Card, 0, len(cards))
+	for _, c := range cards {
+		out = append(out, toGatewayCard(c))
+	}
+	return &gatewaypb.ListCardsResponse{Cards: out}, nil
 }
 
 // RationBridgeFunding implements gatewaypb.GatewayServer.
 func (s *Server) RationBridgeFunding(ctx context.Context, req *gatewaypb.RationBridgeFundingRequest) (*gatewaypb.RationBridgeFundingResponse, error) {
-	result, err := s.bridge.RationBridgeFunding(ctx, req.GetTenantId(), req.GetRequestedMinorUnits(), req.GetReason())
+	result, err := s.cards.RationBridgeFunding(ctx, &cardissuancepb.RationBridgeFundingRequest{
+		TenantId:            req.GetTenantId(),
+		RequestedMinorUnits: req.GetRequestedMinorUnits(),
+		Reason:              req.GetReason(),
+	})
 	if err != nil {
 		return nil, err
 	}
-	s.publish(req.GetTenantId(), "agent_decision", result.Explanation)
+	s.publish(req.GetTenantId(), "agent_decision", result.GetExplanation())
 	return &gatewaypb.RationBridgeFundingResponse{
-		GrantedMinorUnits: result.GrantedMinorUnits,
-		FullyGranted:      result.FullyGranted,
-		Explanation:       result.Explanation,
+		GrantedMinorUnits: result.GetGrantedMinorUnits(),
+		FullyGranted:      result.GetFullyGranted(),
+		Explanation:       result.GetExplanation(),
 	}, nil
 }
 
 // SimulateDeposit implements gatewaypb.GatewayServer. It is a demo/judging
 // hook (see services/cli's `ration simulate-deposit`): it records an
 // expected deposit with ledger-core, optionally backdated so
-// ListLateDeposits immediately reports it as late.
+// ListLateDeposits immediately reports it as late. This is the one RPC
+// gateway.proto exposes that the section 1 split didn't move anywhere
+// else — it always talked to ledger-core directly, no card-issuance or
+// webhook-ingestion involvement, and still does.
 func (s *Server) SimulateDeposit(ctx context.Context, req *gatewaypb.SimulateDepositRequest) (*gatewaypb.SimulateDepositResponse, error) {
 	if req.GetTenantId() == "" {
 		return nil, fmt.Errorf("grpcserver: tenant_id is required")
