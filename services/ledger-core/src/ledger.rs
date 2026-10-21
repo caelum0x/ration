@@ -271,18 +271,49 @@ impl Ledger {
     /// the deposit is already `Received` (e.g. a retried webhook
     /// delivery, or a duplicate call), this returns the existing record
     /// without appending a new event or crediting the ledger again.
+    ///
+    /// Thin wrapper over `mark_deposit_received_with_entry` that drops
+    /// the credit entry it returns — kept as its own method (same
+    /// signature as before `with_entry` was added) so existing callers
+    /// and tests that only care about the `DepositRecord` don't need to
+    /// change.
     pub fn mark_deposit_received(
         &self,
         deposit_id: String,
         received_at_unix: i64,
         external_ref: String,
     ) -> Result<DepositRecord, LedgerError> {
+        self.mark_deposit_received_with_entry(deposit_id, received_at_unix, external_ref)
+            .map(|(deposit, _entry)| deposit)
+    }
+
+    /// Does the same work as `mark_deposit_received`, but also returns
+    /// the `LedgerEntryRecord` the credit produced (`None` when the
+    /// deposit was already `Received` and nothing new was credited).
+    ///
+    /// This exists so callers that need to mirror the credit elsewhere
+    /// — grpc.rs's `mark_deposit_received` RPC handler mirrors it into
+    /// audit-log, exactly like `apply_entry`'s handler already does for
+    /// its own entries (docs/SCALE-EXPANSION.md section 8) — can get at
+    /// the entry without re-deriving or re-querying for it. Before this
+    /// existed, the credit `mark_deposit_received` produces (the only
+    /// way a deposit's money becomes spendable headroom) was invisible
+    /// to the audit trail entirely, even though `apply_entry`'s credits
+    /// were mirrored — an inconsistency the "every money move is
+    /// mirrored" claim in README/docs/SUBMISSION.md didn't actually
+    /// hold for.
+    pub fn mark_deposit_received_with_entry(
+        &self,
+        deposit_id: String,
+        received_at_unix: i64,
+        external_ref: String,
+    ) -> Result<(DepositRecord, Option<LedgerEntryRecord>), LedgerError> {
         let mut inner = self.inner.lock().expect("ledger mutex poisoned");
         let existing = deposit::get(&inner.db, &deposit_id)?
             .ok_or_else(|| LedgerError::DepositNotFound(deposit_id.clone()))?;
 
         if existing.status == DepositStatus::Received {
-            return Ok(existing);
+            return Ok((existing, None));
         }
 
         let current_balance = read_balance(&inner.db, &existing.tenant_id)?;
@@ -322,12 +353,15 @@ impl Ledger {
             Ok(())
         })?;
 
-        Ok(DepositRecord {
-            received_at_unix,
-            status: DepositStatus::Received,
-            external_ref,
-            ..existing
-        })
+        Ok((
+            DepositRecord {
+                received_at_unix,
+                status: DepositStatus::Received,
+                external_ref,
+                ..existing
+            },
+            Some(entry),
+        ))
     }
 
     pub fn list_deposits(&self, tenant_id: &str) -> Result<Vec<DepositRecord>, LedgerError> {

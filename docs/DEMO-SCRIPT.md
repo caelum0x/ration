@@ -24,8 +24,13 @@ scripts/run-demo.sh
 ```
 
 This starts, as background processes:
+- **audit-log** (Go) — the append-only, hash-chained audit trail service
+  (`AUDIT_LOG_GRPC_ADDR`, default `localhost:7003`), started first so
+  ledger-core has a live mirror target from the moment it starts.
 - **ledger-core** (Rust, release build) — the authoritative ledger, on
-  `LEDGER_CORE_ADDR` (default `localhost:7001`).
+  `LEDGER_CORE_ADDR` (default `localhost:7001`). With `AUDIT_LOG_ADDR` set
+  (which `scripts/run-demo.sh` always does), every `ApplyEntry` and
+  `RecordAgentDecision` call is mirrored into audit-log's hash chain.
 - **gateway** (Go, `AIRWALLEX_MODE=mock`) — fronts the mock Airwallex
   client, on `GATEWAY_GRPC_ADDR` (default `localhost:7002`).
 - **agent** — the polling loop that watches for late deposits and runs the
@@ -136,7 +141,32 @@ This is `docs/AGENT-DESIGN.md` rule 3 — "max 1 bridge grant per tenant per
 rolling 24h unless the prior grant was fully repaid" — enforced exactly as
 documented.
 
-## 7. Shut everything down
+## 7. Verify the audit trail independently
+
+Every ledger write and agent decision above was mirrored into audit-log's
+append-only, hash-chained log as it happened. Verify that chain is intact
+*without trusting the live audit-log process at all* — the standalone
+verifier re-derives the hash chain straight from the log file on disk:
+
+```bash
+./bin/verify-chain ./data/audit.log
+```
+
+Expected output:
+
+```
+verify-chain: intact (<N> records checked) — ./data/audit.log
+```
+
+`<N>` should be at least one record per `ApplyEntry`/`RecordAgentDecision`
+call so far (the opening-capital funding from step 1, the simulated
+deposit from step 3, and every agent decision from steps 4/6). A nonzero
+exit code and a `CHAIN BROKEN at sequence ...` message would mean the log
+was tampered with or corrupted after the fact — this is what makes "the
+audit trail is the point" (README, `docs/SUBMISSION.md`) a checkable claim
+instead of an assertion.
+
+## 8. Shut everything down
 
 ```bash
 scripts/stop-demo.sh

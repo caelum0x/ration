@@ -176,11 +176,25 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
     ) -> Result<Response<pb::Deposit>, Status> {
         let req = request.into_inner();
         let ledger = self.ledger.clone();
-        let deposit = tokio::task::spawn_blocking(move || {
-            ledger.mark_deposit_received(req.deposit_id, req.received_at_unix, req.external_ref)
+        let (deposit, credit_entry) = tokio::task::spawn_blocking(move || {
+            ledger.mark_deposit_received_with_entry(
+                req.deposit_id,
+                req.received_at_unix,
+                req.external_ref,
+            )
         })
         .await
         .map_err(join_error)??;
+
+        // Mirror into audit-log (see docs/SCALE-EXPANSION.md section 8),
+        // same posture as apply_entry's handler above: fire-and-forget,
+        // never allowed to delay or fail this response. `credit_entry` is
+        // `None` when the deposit was already `Received` (idempotent
+        // retry) and nothing new was credited — nothing to mirror.
+        if let Some(entry) = &credit_entry {
+            self.audit.mirror_ledger_entry(&deposit.tenant_id, entry);
+        }
+
         Ok(Response::new(to_pb_deposit(&deposit)))
     }
 
