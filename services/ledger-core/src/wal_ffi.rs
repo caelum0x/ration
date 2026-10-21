@@ -42,6 +42,7 @@ const WAL_ERR_EOF: i32 = -4;
 const WAL_ERR_TOO_LARGE: i32 = -5;
 const WAL_ERR_NOMEM: i32 = -6;
 const WAL_ERR_BUFFER_SMALL: i32 = -7;
+const WAL_ERR_CORRUPT_MID_LOG: i32 = -8;
 
 /// Mirrors C's `wal_recovery_stats_t`. `#[repr(C)]` with the exact same
 /// field order/types so it can be passed by pointer to `wal_recover`.
@@ -51,6 +52,7 @@ struct WalRecoveryStatsRaw {
     bytes_recovered: usize,
     torn_tail_dropped: c_int,
     torn_bytes_dropped: usize,
+    corrupt_frame_offset: usize,
 }
 
 /// Matches C's `typedef int (*wal_recover_cb)(const uint8_t *payload, uint32_t len, void *ctx);`.
@@ -86,6 +88,21 @@ pub enum WalError {
     Nomem,
     #[error("WAL read buffer too small")]
     BufferTooSmall,
+    /// `wal_recover` found a frame that failed CRC validation but has
+    /// one or more fully-valid frames *after* it in the file — not a
+    /// shape a crash can produce (nothing runs after a crash to write
+    /// more good frames past a torn one), so this is non-crash
+    /// corruption (disk bit rot, a stray write) instead. The C layer
+    /// deliberately leaves the file byte-for-byte untouched rather than
+    /// truncating away the still-durable frames that follow; `offset`
+    /// is the byte offset of the corrupt frame, for an operator to
+    /// investigate (e.g. via a backup or a lower-level disk scan)
+    /// rather than losing the data silently.
+    #[error(
+        "corrupt WAL frame at byte offset {offset} with valid frames after it — not a \
+         crash-consistent torn tail, refusing to truncate; manual recovery required"
+    )]
+    CorruptMidLog { offset: u64 },
     #[error("unknown WAL status code {0}")]
     Unknown(i32),
 }
@@ -100,6 +117,11 @@ fn status_to_result(code: i32) -> Result<(), WalError> {
         WAL_ERR_TOO_LARGE => Err(WalError::TooLarge),
         WAL_ERR_NOMEM => Err(WalError::Nomem),
         WAL_ERR_BUFFER_SMALL => Err(WalError::BufferTooSmall),
+        // Reached only if a future caller other than `recover` somehow
+        // surfaces this code — `recover` itself intercepts
+        // WAL_ERR_CORRUPT_MID_LOG before calling this function so it
+        // can attach the real `corrupt_frame_offset` from `stats`.
+        WAL_ERR_CORRUPT_MID_LOG => Err(WalError::CorruptMidLog { offset: 0 }),
         other => Err(WalError::Unknown(other)),
     }
 }
@@ -116,6 +138,17 @@ pub struct RecoveryStats {
     pub bytes_recovered: u64,
     pub torn_tail_dropped: bool,
     pub torn_bytes_dropped: u64,
+}
+
+impl RecoveryStats {
+    fn from_raw(raw: &WalRecoveryStatsRaw) -> Self {
+        RecoveryStats {
+            frames_recovered: raw.frames_recovered as u64,
+            bytes_recovered: raw.bytes_recovered as u64,
+            torn_tail_dropped: raw.torn_tail_dropped != 0,
+            torn_bytes_dropped: raw.torn_bytes_dropped as u64,
+        }
+    }
 }
 
 /// A safe handle to an open write-ahead log file.
@@ -256,6 +289,14 @@ extern "C" fn recover_trampoline<F: FnMut(&[u8]) -> bool>(
 /// a crash. `callback` returns `true` to continue, `false` to abort
 /// recovery early (surfaced as `WalError::Invalid`).
 ///
+/// Returns `Err(WalError::CorruptMidLog { offset })` — without touching
+/// the file at all — if a CRC-mismatched frame at `offset` has one or
+/// more fully-valid frames after it, since that shape is never produced
+/// by a crash (only by non-crash corruption) and truncating it would
+/// silently destroy still-durable data. Frames before `offset` were
+/// still delivered to `callback` in this case; nothing at or after it
+/// was.
+///
 /// Safe to call on a path that does not exist yet (the C implementation
 /// creates it, scans zero frames, and reports `WAL_OK`).
 pub fn recover<F: FnMut(&[u8]) -> bool>(
@@ -268,6 +309,7 @@ pub fn recover<F: FnMut(&[u8]) -> bool>(
         bytes_recovered: 0,
         torn_tail_dropped: 0,
         torn_bytes_dropped: 0,
+        corrupt_frame_offset: 0,
     };
     let ctx_ptr: *mut c_void = (&mut callback as *mut F).cast();
     let rc = unsafe {
@@ -278,13 +320,13 @@ pub fn recover<F: FnMut(&[u8]) -> bool>(
             &mut stats,
         )
     };
+    if rc == WAL_ERR_CORRUPT_MID_LOG {
+        return Err(WalError::CorruptMidLog {
+            offset: stats.corrupt_frame_offset as u64,
+        });
+    }
     status_to_result(rc)?;
-    Ok(RecoveryStats {
-        frames_recovered: stats.frames_recovered as u64,
-        bytes_recovered: stats.bytes_recovered as u64,
-        torn_tail_dropped: stats.torn_tail_dropped != 0,
-        torn_bytes_dropped: stats.torn_bytes_dropped as u64,
-    })
+    Ok(RecoveryStats::from_raw(&stats))
 }
 
 #[cfg(test)]
@@ -349,6 +391,128 @@ mod tests {
         assert_eq!(
             seen,
             vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
+        );
+    }
+
+    /// The gap this closes: a CRC mismatch is not always tail corruption
+    /// from a crash. Flipping a payload byte in the *middle* frame (with
+    /// a fully valid, already-durable frame after it — something a real
+    /// crash could never leave behind) must not be treated the same as
+    /// a torn tail. The old C behavior would silently truncate the file
+    /// from the corrupt frame onward, permanently destroying the valid
+    /// "three" frame. The fix must refuse to truncate and surface a
+    /// distinct, precise error instead.
+    #[test]
+    fn recover_refuses_to_truncate_past_mid_log_corruption_with_valid_data_after() {
+        use std::fs::OpenOptions;
+        use std::io::{Read, Seek, SeekFrom, Write};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.wal");
+
+        {
+            let mut w = Wal::open(&path).unwrap();
+            w.append(b"one").unwrap();
+            w.append(b"two-will-be-corrupted").unwrap();
+            w.append(b"three-must-survive").unwrap();
+        }
+
+        let original_bytes = std::fs::read(&path).unwrap();
+
+        // "one" occupies an 8-byte header + 3-byte payload = offset 11,
+        // where frame two's header starts. Flip the first byte of frame
+        // two's *payload* (right after its own 8-byte header), leaving
+        // every length field and every other frame's bytes untouched.
+        let frame_two_payload_offset: u64 = 11 + 8;
+        let mut f = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        f.seek(SeekFrom::Start(frame_two_payload_offset)).unwrap();
+        let mut byte = [0u8; 1];
+        f.read_exact(&mut byte).unwrap();
+        byte[0] ^= 0xFF;
+        f.seek(SeekFrom::Start(frame_two_payload_offset)).unwrap();
+        f.write_all(&byte).unwrap();
+        drop(f);
+
+        let mut seen = Vec::new();
+        let result = recover(&path, |payload| {
+            seen.push(payload.to_vec());
+            true
+        });
+
+        match result {
+            Err(WalError::CorruptMidLog { offset }) => {
+                assert_eq!(offset, 11, "must report frame two's own start offset");
+            }
+            other => panic!("expected WalError::CorruptMidLog, got {other:?}"),
+        }
+
+        // Only the valid prefix ("one") was ever handed to the callback.
+        assert_eq!(seen, vec![b"one".to_vec()]);
+
+        // The file on disk must be byte-for-byte unchanged — in
+        // particular, "three"'s bytes must still be sitting there,
+        // not truncated away.
+        let bytes_after = std::fs::read(&path).unwrap();
+        assert_eq!(
+            bytes_after.len(),
+            original_bytes.len(),
+            "mid-log corruption must never truncate the file"
+        );
+        assert_eq!(
+            &bytes_after[..11],
+            &original_bytes[..11],
+            "frame one must be untouched"
+        );
+        assert_ne!(
+            bytes_after, original_bytes,
+            "sanity: the corruption byte flip itself must be present"
+        );
+    }
+
+    /// Sibling case: when the corrupted frame IS the last one in the
+    /// file (nothing follows), this must behave exactly like the
+    /// classic torn-tail case and truncate — "nothing after" is the
+    /// genuine crash shape, not evidence of mid-log corruption.
+    #[test]
+    fn recover_still_truncates_when_corrupted_frame_is_the_true_tail() {
+        use std::fs::OpenOptions;
+        use std::io::{Read, Seek, SeekFrom, Write};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.wal");
+
+        {
+            let mut w = Wal::open(&path).unwrap();
+            w.append(b"one").unwrap();
+            w.append(b"two-will-be-corrupted").unwrap();
+        }
+
+        let frame_two_payload_offset: u64 = 11 + 8;
+        let mut f = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        f.seek(SeekFrom::Start(frame_two_payload_offset)).unwrap();
+        let mut byte = [0u8; 1];
+        f.read_exact(&mut byte).unwrap();
+        byte[0] ^= 0xFF;
+        f.seek(SeekFrom::Start(frame_two_payload_offset)).unwrap();
+        f.write_all(&byte).unwrap();
+        drop(f);
+
+        let mut seen = Vec::new();
+        let stats = recover(&path, |payload| {
+            seen.push(payload.to_vec());
+            true
+        })
+        .expect("a corrupted true-tail frame must still recover cleanly, not error out");
+
+        assert_eq!(stats.frames_recovered, 1);
+        assert!(stats.torn_tail_dropped);
+        assert_eq!(seen, vec![b"one".to_vec()]);
+
+        let bytes_after = std::fs::read(&path).unwrap();
+        assert_eq!(
+            bytes_after.len(),
+            11,
+            "file must be truncated back to exactly frame one"
         );
     }
 }

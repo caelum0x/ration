@@ -349,6 +349,107 @@ static void test_corrupted_payload_is_dropped_as_torn(void) {
     remove_tmp_dir(dir, path);
 }
 
+/* The core gap this test closes: a CRC mismatch is NOT always a torn
+ * tail from a crash. If it happens somewhere in the MIDDLE of the file
+ * (with fully valid, already-durable frames after it - here frame3,
+ * which a real crash could never leave behind, since nothing runs
+ * after a crash to write more good frames past a torn one), the old
+ * behavior (treat any bad-CRC frame as "torn tail", truncate from
+ * there to EOF) would silently and permanently destroy frame3 forever.
+ * The fix must detect this is not tail corruption, refuse to truncate
+ * anything, and report a hard error instead. */
+static void test_mid_log_corruption_with_valid_frame_after_is_not_truncated(void) {
+    char dir[64];
+    make_tmp_dir(dir, sizeof(dir));
+    char path[128];
+    snprintf(path, sizeof(path), "%s/wal.log", dir);
+
+    wal_status_t st;
+    wal_t *w = wal_open(path, &st);
+    EXPECT(w != NULL);
+
+    const char *frame1 = "good-frame-one";
+    const char *frame2 = "frame-that-gets-corrupted-but-is-not-the-tail";
+    const char *frame3 = "good-frame-three-must-survive";
+
+    EXPECT(wal_append(w, (const uint8_t *)frame1, (uint32_t)strlen(frame1)) == WAL_OK);
+    off_t offset_before_frame2 = file_size_of(path);
+    EXPECT(wal_append(w, (const uint8_t *)frame2, (uint32_t)strlen(frame2)) == WAL_OK);
+    EXPECT(wal_append(w, (const uint8_t *)frame3, (uint32_t)strlen(frame3)) == WAL_OK);
+    off_t full_size = file_size_of(path);
+    wal_close(w);
+
+    /* Flip one payload byte inside frame2 (leaving its length field, and
+     * every byte of frame1/frame3, untouched) - simulates disk bit rot
+     * after both frames were already fsynced, not a crash. */
+    corrupt_byte_at(path, offset_before_frame2 + (off_t)WAL_FRAME_HEADER_SIZE);
+
+    capture_t cap = {.count = 0};
+    wal_recovery_stats_t stats;
+    wal_status_t rc = wal_recover(path, capture_cb, &cap, &stats);
+
+    EXPECT(rc == WAL_ERR_CORRUPT_MID_LOG);
+    EXPECT(stats.frames_recovered == 1);
+    EXPECT(stats.corrupt_frame_offset == (size_t)offset_before_frame2);
+    EXPECT(stats.torn_tail_dropped == 0);
+    EXPECT(stats.torn_bytes_dropped == 0);
+
+    /* Only frame1 (the valid prefix before the corruption) was delivered
+     * to the callback - frame2 is corrupt and frame3, though itself
+     * perfectly valid, is never reached because recovery must not
+     * silently skip past corruption and resume replaying. */
+    EXPECT(cap.count == 1);
+    EXPECT(cap.lens[0] == strlen(frame1));
+    EXPECT(memcmp(cap.payloads[0], frame1, cap.lens[0]) == 0);
+
+    /* The file must be left COMPLETELY untouched - frame3's bytes must
+     * still be sitting on disk, recoverable by a human/tool later, not
+     * truncated away. */
+    EXPECT(file_size_of(path) == full_size);
+
+    remove_tmp_dir(dir, path);
+}
+
+/* Sibling case: when the bad-CRC frame IS the last frame in the file
+ * (nothing follows it at all), this must behave exactly like the
+ * existing torn-tail case - vacuous "nothing after" is not evidence of
+ * mid-log corruption, it's the classic crash-at-the-tail shape, and
+ * truncating is correct and safe (this guards against an off-by-one in
+ * the lookahead treating "no more bytes" as "the suffix is trivially
+ * valid, so this must be mid-log corruption"). */
+static void test_corrupted_last_frame_with_nothing_after_still_truncates(void) {
+    char dir[64];
+    make_tmp_dir(dir, sizeof(dir));
+    char path[128];
+    snprintf(path, sizeof(path), "%s/wal.log", dir);
+
+    wal_status_t st;
+    wal_t *w = wal_open(path, &st);
+    EXPECT(w != NULL);
+
+    const char *frame1 = "good-frame-one";
+    const char *frame2 = "last-frame-gets-corrupted";
+
+    EXPECT(wal_append(w, (const uint8_t *)frame1, (uint32_t)strlen(frame1)) == WAL_OK);
+    off_t offset_before_frame2 = file_size_of(path);
+    EXPECT(wal_append(w, (const uint8_t *)frame2, (uint32_t)strlen(frame2)) == WAL_OK);
+    wal_close(w);
+
+    corrupt_byte_at(path, offset_before_frame2 + (off_t)WAL_FRAME_HEADER_SIZE);
+
+    capture_t cap = {.count = 0};
+    wal_recovery_stats_t stats;
+    wal_status_t rc = wal_recover(path, capture_cb, &cap, &stats);
+
+    EXPECT(rc == WAL_OK);
+    EXPECT(stats.frames_recovered == 1);
+    EXPECT(stats.torn_tail_dropped == 1);
+    EXPECT(cap.count == 1);
+    EXPECT(file_size_of(path) == offset_before_frame2);
+
+    remove_tmp_dir(dir, path);
+}
+
 static void test_append_rejects_oversized_payload(void) {
     char dir[64];
     make_tmp_dir(dir, sizeof(dir));
@@ -421,6 +522,8 @@ int main(void) {
     RUN(test_torn_tail_mid_payload_is_recovered);
     RUN(test_torn_tail_mid_header_is_recovered);
     RUN(test_corrupted_payload_is_dropped_as_torn);
+    RUN(test_mid_log_corruption_with_valid_frame_after_is_not_truncated);
+    RUN(test_corrupted_last_frame_with_nothing_after_still_truncates);
     RUN(test_append_rejects_oversized_payload);
     RUN(test_read_next_buffer_too_small_then_retry);
     RUN(test_sync_is_safe);

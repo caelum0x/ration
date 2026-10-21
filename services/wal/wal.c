@@ -236,13 +236,133 @@ void wal_close(wal_t *w) {
     free(w);
 }
 
+/* Verdict for a single frame-parse attempt at a given offset, shared by
+ * wal_recover()'s main scan and by suffix_is_fully_valid()'s lookahead
+ * below - both need to answer exactly the same question ("is there a
+ * well-formed frame right here?") so they share one implementation
+ * rather than risking the two subtly diverging over time. */
+typedef enum {
+    FRAME_PARSE_OK = 0,       /* header + payload present, CRC matches */
+    FRAME_PARSE_TORN,         /* incomplete header/payload, or an implausible
+                                 * length field - consistent with a crash
+                                 * mid-write at exactly this position */
+    FRAME_PARSE_BAD_CRC,      /* header + full payload present on disk, but
+                                 * the checksum doesn't match - NOT a shape a
+                                 * crash can produce if anything follows it */
+    FRAME_PARSE_NOMEM,        /* realloc() failed growing the scratch buffer */
+    FRAME_PARSE_IO,           /* pread() failed with a real I/O error */
+} frame_parse_result_t;
+
+/* Attempts to parse exactly one frame starting at `offset`, where the
+ * file is known to be `file_size` bytes total. On FRAME_PARSE_OK or
+ * FRAME_PARSE_BAD_CRC, `*out_len` and `*out_next_offset` are always set
+ * (BAD_CRC still knows the frame's claimed length and therefore where
+ * the next frame would start, since it's the payload *content* that
+ * failed validation, not the length field). `*payload_buf`/`*payload_cap`
+ * are the caller's reusable scratch buffer, grown via realloc as needed. */
+static frame_parse_result_t parse_frame_at(int fd, off_t offset, off_t file_size,
+                                            uint8_t **payload_buf, uint32_t *payload_cap,
+                                            uint32_t *out_len, off_t *out_next_offset) {
+    off_t remaining = file_size - offset;
+    if (remaining < (off_t)WAL_FRAME_HEADER_SIZE) {
+        return FRAME_PARSE_TORN; /* not enough bytes left for even a header */
+    }
+
+    uint8_t hdr_buf[WAL_FRAME_HEADER_SIZE];
+    ssize_t n = pread_full(fd, hdr_buf, WAL_FRAME_HEADER_SIZE, offset);
+    if (n < 0) {
+        return FRAME_PARSE_IO;
+    }
+    if ((size_t)n != WAL_FRAME_HEADER_SIZE) {
+        return FRAME_PARSE_TORN;
+    }
+
+    wal_frame_header_t hdr;
+    wal_frame_header_decode(hdr_buf, &hdr);
+
+    if (hdr.length > WAL_MAX_PAYLOAD_SIZE) {
+        /* A length field this large is almost certainly a corrupt or
+         * torn header rather than a legitimate frame - treat it the
+         * same way as a torn tail rather than failing recovery. */
+        return FRAME_PARSE_TORN;
+    }
+
+    off_t payload_offset = offset + (off_t)WAL_FRAME_HEADER_SIZE;
+    if (payload_offset + (off_t)hdr.length > file_size) {
+        return FRAME_PARSE_TORN; /* payload was never fully written */
+    }
+
+    if (hdr.length > *payload_cap) {
+        uint8_t *bigger = realloc(*payload_buf, hdr.length);
+        if (!bigger) {
+            return FRAME_PARSE_NOMEM;
+        }
+        *payload_buf = bigger;
+        *payload_cap = hdr.length;
+    }
+
+    if (hdr.length > 0) {
+        n = pread_full(fd, *payload_buf, hdr.length, payload_offset);
+        if (n < 0) {
+            return FRAME_PARSE_IO;
+        }
+        if ((size_t)n != hdr.length) {
+            return FRAME_PARSE_TORN;
+        }
+    }
+
+    *out_len = hdr.length;
+    *out_next_offset = payload_offset + (off_t)hdr.length;
+
+    uint32_t crc = crc32_compute(*payload_buf, hdr.length);
+    if (crc != hdr.crc32) {
+        return FRAME_PARSE_BAD_CRC; /* bit flip / partial fsync: payload doesn't match its checksum */
+    }
+    return FRAME_PARSE_OK;
+}
+
+/* Answers "could [offset, file_size) legitimately be the result of
+ * normal, successful appends?" - i.e. does it parse as a complete chain
+ * of CRC-valid frames with nothing left over. Used to tell a genuine
+ * crash-torn tail (nothing of value follows it) apart from mid-log
+ * corruption (good frames follow, so truncating here would destroy
+ * them). On an allocation/IO failure while scanning ahead, sets
+ * `*hard_err` to the corresponding wal_status_t and returns 0; callers
+ * must check `*hard_err` before trusting a 0 return as "not valid"
+ * rather than "couldn't tell". */
+static int suffix_is_fully_valid(int fd, off_t offset, off_t file_size,
+                                  uint8_t **scratch, uint32_t *scratch_cap,
+                                  wal_status_t *hard_err) {
+    *hard_err = WAL_OK;
+    while (offset < file_size) {
+        uint32_t frame_len = 0;
+        off_t next_offset = 0;
+        frame_parse_result_t pr =
+            parse_frame_at(fd, offset, file_size, scratch, scratch_cap, &frame_len, &next_offset);
+
+        if (pr == FRAME_PARSE_IO) {
+            *hard_err = WAL_ERR_IO;
+            return 0;
+        }
+        if (pr == FRAME_PARSE_NOMEM) {
+            *hard_err = WAL_ERR_NOMEM;
+            return 0;
+        }
+        if (pr != FRAME_PARSE_OK) {
+            return 0; /* torn or bad-CRC frame in the lookahead window: not a clean suffix */
+        }
+        offset = next_offset;
+    }
+    return offset == file_size;
+}
+
 wal_status_t wal_recover(const char *path, wal_recover_cb cb, void *ctx,
                           wal_recovery_stats_t *stats) {
     if (!path) {
         return WAL_ERR_INVALID;
     }
 
-    wal_recovery_stats_t local = {0, 0, 0, 0};
+    wal_recovery_stats_t local = {0};
 
     int fd = open(path, O_RDWR | O_CREAT, 0644);
     if (fd < 0) {
@@ -264,71 +384,56 @@ wal_status_t wal_recover(const char *path, wal_recover_cb cb, void *ctx,
     int torn = 0;
 
     while (offset < file_size) {
-        off_t remaining = file_size - offset;
+        uint32_t frame_len = 0;
+        off_t next_offset = 0;
+        frame_parse_result_t pr =
+            parse_frame_at(fd, offset, file_size, &scratch, &scratch_cap, &frame_len, &next_offset);
 
-        if (remaining < (off_t)WAL_FRAME_HEADER_SIZE) {
-            torn = 1;
-            break; /* not enough bytes left for even a header: torn tail */
-        }
-
-        uint8_t hdr_buf[WAL_FRAME_HEADER_SIZE];
-        ssize_t n = pread_full(fd, hdr_buf, WAL_FRAME_HEADER_SIZE, offset);
-        if (n < 0) {
+        if (pr == FRAME_PARSE_IO) {
             result = WAL_ERR_IO;
             goto out;
         }
-        if ((size_t)n != WAL_FRAME_HEADER_SIZE) {
+        if (pr == FRAME_PARSE_NOMEM) {
+            result = WAL_ERR_NOMEM;
+            goto out;
+        }
+        if (pr == FRAME_PARSE_TORN) {
+            torn = 1;
+            break;
+        }
+        if (pr == FRAME_PARSE_BAD_CRC) {
+            /* Ambiguous on its own: a bad-CRC frame could be (1) a
+             * genuine crash-torn tail, if nothing of value follows it,
+             * or (2) non-crash corruption (disk bit rot, a stray write)
+             * of a frame that is NOT the last one, if good frames exist
+             * after it - a real crash cannot produce case 2, since
+             * nothing runs after a crash to write more good frames past
+             * a torn one. Only resolve to case 2 (refuse to truncate)
+             * when there is in fact more data after this frame AND that
+             * data is a fully valid frame chain; otherwise fall through
+             * to the ordinary torn-tail handling below, exactly as
+             * before this distinction existed. */
+            if (next_offset < file_size) {
+                wal_status_t lookahead_err = WAL_OK;
+                int rest_is_valid = suffix_is_fully_valid(fd, next_offset, file_size, &scratch,
+                                                           &scratch_cap, &lookahead_err);
+                if (lookahead_err != WAL_OK) {
+                    result = lookahead_err;
+                    goto out;
+                }
+                if (rest_is_valid) {
+                    local.corrupt_frame_offset = (size_t)offset;
+                    result = WAL_ERR_CORRUPT_MID_LOG;
+                    goto out; /* deliberately do NOT truncate: leave every byte on disk untouched */
+                }
+            }
             torn = 1;
             break;
         }
 
-        wal_frame_header_t hdr;
-        wal_frame_header_decode(hdr_buf, &hdr);
-
-        if (hdr.length > WAL_MAX_PAYLOAD_SIZE) {
-            /* A length field this large is almost certainly a corrupt or
-             * torn header rather than a legitimate frame - treat it the
-             * same way as a torn tail rather than failing recovery. */
-            torn = 1;
-            break;
-        }
-
-        off_t payload_offset = offset + (off_t)WAL_FRAME_HEADER_SIZE;
-        if (payload_offset + (off_t)hdr.length > file_size) {
-            torn = 1; /* payload was never fully written */
-            break;
-        }
-
-        if (hdr.length > scratch_cap) {
-            uint8_t *bigger = realloc(scratch, hdr.length);
-            if (!bigger) {
-                result = WAL_ERR_NOMEM;
-                goto out;
-            }
-            scratch = bigger;
-            scratch_cap = hdr.length;
-        }
-
-        if (hdr.length > 0) {
-            n = pread_full(fd, scratch, hdr.length, payload_offset);
-            if (n < 0) {
-                result = WAL_ERR_IO;
-                goto out;
-            }
-            if ((size_t)n != hdr.length) {
-                torn = 1;
-                break;
-            }
-        }
-
-        uint32_t crc = crc32_compute(scratch, hdr.length);
-        if (crc != hdr.crc32) {
-            torn = 1; /* bit flip / partial fsync: payload doesn't match its checksum */
-            break;
-        }
-
+        /* FRAME_PARSE_OK */
         if (cb) {
-            int rc = cb(scratch, hdr.length, ctx);
+            int rc = cb(scratch, frame_len, ctx);
             if (rc != 0) {
                 result = WAL_ERR_INVALID;
                 goto out;
@@ -336,8 +441,8 @@ wal_status_t wal_recover(const char *path, wal_recover_cb cb, void *ctx,
         }
 
         local.frames_recovered++;
-        local.bytes_recovered += hdr.length;
-        offset = payload_offset + (off_t)hdr.length;
+        local.bytes_recovered += frame_len;
+        offset = next_offset;
     }
 
     if (torn) {

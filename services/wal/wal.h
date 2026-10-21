@@ -36,6 +36,16 @@ typedef enum {
     WAL_ERR_TOO_LARGE = -5,     /* payload exceeds WAL_MAX_PAYLOAD_SIZE */
     WAL_ERR_NOMEM = -6,         /* allocation failure */
     WAL_ERR_BUFFER_SMALL = -7,  /* wal_read_next: caller buffer too small */
+    WAL_ERR_CORRUPT_MID_LOG = -8, /* wal_recover: a frame failed CRC validation
+                                    * but one or more fully-valid frames were
+                                    * found after it - this is NOT a
+                                    * crash-consistent torn tail (a crash can
+                                    * never leave good frames after a torn
+                                    * one), so the file is left completely
+                                    * untouched (no truncation) rather than
+                                    * risking silent loss of durable data.
+                                    * See wal_recovery_stats_t.corrupt_frame_offset
+                                    * for where to start manual investigation. */
 } wal_status_t;
 
 typedef struct {
@@ -43,6 +53,11 @@ typedef struct {
     size_t bytes_recovered;     /* sum of payload bytes across those frames */
     int torn_tail_dropped;      /* 1 if a trailing invalid frame was discarded */
     size_t torn_bytes_dropped;  /* bytes truncated off the file for the torn tail */
+    size_t corrupt_frame_offset; /* valid only when wal_recover() returns
+                                   * WAL_ERR_CORRUPT_MID_LOG: the byte offset
+                                   * of the first frame that failed CRC
+                                   * validation despite valid frames existing
+                                   * after it. Zero and meaningless otherwise. */
 } wal_recovery_stats_t;
 
 /* Invoked once per valid frame during wal_recover(), in append order.
@@ -84,11 +99,27 @@ void wal_close(wal_t *w);
 
 /* Scan the WAL file at `path` from the beginning, validating and
  * replaying every well-formed frame via `cb`. If the file ends with a
- * torn frame (incomplete header, incomplete payload, or a CRC mismatch),
+ * torn frame (incomplete header, incomplete payload, an implausible
+ * length field, or a CRC-mismatched frame with nothing valid after it),
  * that frame and anything after it is discarded: the file is truncated
  * back to the end of the last valid frame so it is immediately safe to
- * wal_open() and keep appending to. `stats`, if non-NULL, is filled in
- * with what was recovered. Intended to be called once at startup, before
+ * wal_open() and keep appending to.
+ *
+ * A CRC-mismatched frame that has one or more fully-valid frames AFTER
+ * it is handled differently and deliberately NOT truncated: a real
+ * crash can only ever tear the very last frame (nothing runs to write
+ * more good frames past a torn one), so a bad-CRC frame with valid data
+ * after it can only be non-crash corruption (disk bit rot, a stray
+ * write). Discarding it the same way as a torn tail would silently and
+ * permanently destroy already-durable, previously-fsynced frames.
+ * Instead this returns WAL_ERR_CORRUPT_MID_LOG, leaves the file
+ * byte-for-byte untouched, and reports the corrupt frame's byte offset
+ * via `stats->corrupt_frame_offset` so an operator can investigate
+ * rather than losing the data silently.
+ *
+ * `stats`, if non-NULL, is filled in with what was recovered (or, on
+ * WAL_ERR_CORRUPT_MID_LOG, with what was recovered up to the corrupt
+ * frame plus its offset). Intended to be called once at startup, before
  * wal_open(). */
 wal_status_t wal_recover(const char *path, wal_recover_cb cb, void *ctx,
                           wal_recovery_stats_t *stats);

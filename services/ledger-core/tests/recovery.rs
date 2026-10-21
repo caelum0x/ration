@@ -8,7 +8,7 @@
 //! truncate the torn tail cleanly and reconstruct every pre-crash entry
 //! with no loss and no double-application.
 
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use ledger_core::ledger::{ApplyOutcome, Ledger, LedgerEntryType};
@@ -168,6 +168,113 @@ fn crash_mid_write_loses_nothing_and_double_applies_nothing_on_restart() {
         entries2.len(),
         4,
         "still exactly 4 entries — nothing double-applied across two restarts"
+    );
+}
+
+/// Flips one bit inside the byte at `offset` in `path` - used to
+/// simulate silent disk-level corruption (bit rot, a stray write) of an
+/// already-fsynced, previously-durable frame, as opposed to
+/// `simulate_crash_mid_write`'s crash-shaped incomplete tail write.
+fn corrupt_byte_at(path: &Path, offset: u64) {
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("WAL file must already exist before corrupting a byte in it");
+    f.seek(SeekFrom::Start(offset)).unwrap();
+    let mut byte = [0u8; 1];
+    f.read_exact(&mut byte).unwrap();
+    byte[0] ^= 0xFF;
+    f.seek(SeekFrom::Start(offset)).unwrap();
+    f.write_all(&byte).unwrap();
+}
+
+/// Proves the WAL-layer gap this change closes holds at the full
+/// `Ledger::open` boot path too, not just inside `wal_ffi` unit tests:
+/// non-crash corruption (a flipped bit) of a frame that has a fully
+/// valid, already-durable frame *after* it (evt-2's entry, below) must
+/// never be silently discarded the way a genuine crash-torn tail is.
+/// `Ledger::open` must refuse to boot instead of quietly losing evt-2's
+/// money-moving entry, and must leave the WAL file completely
+/// untouched so the data is still recoverable by a human/tool later.
+#[test]
+fn mid_log_corruption_with_valid_frames_after_refuses_to_boot_rather_than_losing_data() {
+    let (wal_path, db_path) = temp_paths("case3-midlog-corruption");
+
+    let (offset_after_tenant_created, offset_after_entry1, full_size) = {
+        let (ledger, replayed) = Ledger::open(&wal_path, &db_path).unwrap();
+        assert_eq!(replayed, 0, "fresh WAL has nothing to replay");
+
+        let tenant = ledger
+            .create_tenant("Gamma".into(), "USD".into(), 0)
+            .unwrap();
+        let offset_after_tenant_created = std::fs::metadata(&wal_path).unwrap().len();
+
+        ledger
+            .apply_entry(
+                tenant.id.clone(),
+                LedgerEntryType::Credit,
+                Money::new(500, "USD").unwrap(),
+                "seed".into(),
+                "evt-1".into(),
+                "".into(),
+            )
+            .unwrap();
+        let offset_after_entry1 = std::fs::metadata(&wal_path).unwrap().len();
+        assert!(
+            offset_after_entry1 > offset_after_tenant_created + 8,
+            "sanity: evt-1's frame has at least one payload byte to flip"
+        );
+
+        // A fully valid, fully-durable second entry AFTER the one about
+        // to be corrupted - the entry a real crash could never leave
+        // intact behind a torn frame, and the entry that must not be
+        // silently lost.
+        ledger
+            .apply_entry(
+                tenant.id,
+                LedgerEntryType::Credit,
+                Money::new(250, "USD").unwrap(),
+                "seed2".into(),
+                "evt-2".into(),
+                "".into(),
+            )
+            .unwrap();
+        let full_size = std::fs::metadata(&wal_path).unwrap().len();
+
+        (offset_after_tenant_created, offset_after_entry1, full_size)
+        // `ledger` is dropped here, same as the crash-mid-write test above.
+    };
+
+    // Flip one byte inside evt-1's EntryApplied frame payload (right
+    // after its own 8-byte WAL header) - leaves the TenantCreated frame
+    // before it, and evt-2's EntryApplied frame after it, byte-for-byte
+    // untouched.
+    corrupt_byte_at(&wal_path, offset_after_tenant_created + 8);
+    let _ = offset_after_entry1; // only used for the sanity assert above
+
+    // Wipe the SQLite index, exactly like the crash-mid-write test: the
+    // only way to recover must be via the WAL.
+    std::fs::remove_file(&db_path).unwrap();
+
+    let msg = match Ledger::open(&wal_path, &db_path) {
+        Ok(_) => panic!(
+            "mid-log corruption with valid data after it must refuse to boot, \
+             not silently replay only the valid prefix and drop evt-2"
+        ),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        msg.contains("not a crash-consistent torn tail"),
+        "error should explain this is not ordinary crash recovery, got: {msg}"
+    );
+
+    // The refused boot must never have touched the file - evt-2's bytes
+    // must still be sitting on disk, not truncated away.
+    let size_after_failed_boot = std::fs::metadata(&wal_path).unwrap().len();
+    assert_eq!(
+        size_after_failed_boot, full_size,
+        "a refused boot must never truncate the WAL file"
     );
 }
 
