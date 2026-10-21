@@ -86,19 +86,14 @@ func (h *Handler) handleIssueCard(w http.ResponseWriter, r *http.Request) {
 
 // handleGetCard serves GET /v1/cards/{card_id}.
 //
-// TODO(exact blocker, not introduced by this facade): a card ID that
-// doesn't exist currently surfaces as HTTP 500 / gRPC code "UNKNOWN",
-// not 404 — services/card-issuance/internal/cardsvc.Service.GetCard
-// returns a plain `fmt.Errorf("...: %w", airwallex.ErrNotFound)`, not a
-// status.Error(codes.NotFound, ...), so the gRPC runtime's default
-// error conversion (any non-status error becomes codes.Unknown) is
-// what this facade's otherwise-correct codes.NotFound -> 404 mapping
-// (see errors.go's httpStatusForCode) has to translate. Fixing this
-// means services/card-issuance/internal/grpcserver wrapping cardsvc's
-// not-found errors in status.Error(codes.NotFound, ...) before
-// returning them — a card-issuance change, out of this facade's scope,
-// and one every other GatewayClient caller (TUI, CLI, sdk/go/ration,
-// sdk/rust/ration-client) is equally affected by today.
+// A card ID that doesn't exist surfaces as a proper gRPC
+// codes.NotFound (services/card-issuance/internal/grpcserver wraps
+// cardsvc's airwallex.ErrNotFound in status.Error(codes.NotFound, ...)
+// before it leaves that service), which this facade's
+// codes.NotFound -> 404 mapping (see errors.go's httpStatusForCode)
+// then translates correctly — fixed for every GatewayClient caller
+// (TUI, CLI, sdk/go/ration, sdk/rust/ration-client, this facade), not
+// just here.
 func (h *Handler) handleGetCard(w http.ResponseWriter, r *http.Request) {
 	cardID := r.PathValue("card_id")
 	if cardID == "" {
@@ -114,8 +109,8 @@ func (h *Handler) handleGetCard(w http.ResponseWriter, r *http.Request) {
 	if card.GetId() == "" {
 		// Defensive: some GatewayClient implementations may return a
 		// nil/zero-value Card with no error for an unknown ID rather
-		// than an error (see the TODO above) — treat that the same as
-		// a clean 404 rather than serving an empty-but-200 body.
+		// than an error — treat that the same as a clean 404 rather
+		// than serving an empty-but-200 body.
 		body := errorBody{}
 		body.Error.Code = codes.NotFound.String()
 		body.Error.Message = "card not found"

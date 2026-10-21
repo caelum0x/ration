@@ -340,8 +340,14 @@ single source of truth.
    section 2) incremented on every `spawn_append` failure in
    `services/ledger-core/src/audit_mirror.rs`, alerted on past a small
    non-zero threshold.
-4. **Public HTTP webhook listener has no rate limiting** (actor 2's DoS
-   row above) and **no replay-window check** (actor 2's EoP row above).
+4. ~~Public HTTP webhook listener has no rate limiting and no
+   replay-window check.~~ **Fixed**: both are mitigated today (actor
+   2's DoS and EoP rows above) — `internal/ratelimit`'s token-bucket
+   HTTP middleware fronts the listener, and `VerifySignature` rejects
+   any delivery whose `x-timestamp` is more than 5 minutes stale. This
+   item's numbering is kept (rather than renumbered away) so earlier
+   cross-references in this doc's history stay meaningful; no gap
+   remains at this item today.
 5. **mTLS certs are dev-only self-signed** (`infra/dev-ca/`, explicitly
    labeled "DEV-ONLY" in its own script header) with 1-year leaves and
    no rotation story. A real deployment needs a managed CA (AWS Private
