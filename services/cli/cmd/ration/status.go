@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/caelum0x/ration/services/cli/internal/moneyfmt"
 
@@ -177,9 +179,9 @@ func printDecisions(out io.Writer, decisions []*ledgerpb.AgentDecision) {
 	for _, d := range decisions {
 		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n",
 			time.Unix(d.CreatedAtUnix, 0).Format(time.RFC3339),
-			d.Trigger,
+			truncate(sanitizeControlChars(d.Trigger), 40),
 			d.Action.String(),
-			truncate(d.Rationale, 80),
+			truncate(sanitizeControlChars(d.Rationale), 80),
 		)
 	}
 	_ = w.Flush()
@@ -190,6 +192,34 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-1] + "…"
+}
+
+// sanitizeControlChars strips C0 and C1 control characters (including ESC,
+// so no ANSI/VT100 escape sequence can survive) from LLM-authored,
+// attacker-influenceable free text (agent decision Rationale/Trigger)
+// before it is written to an operator's terminal.
+//
+// This closes the gap documented in docs/THREAT-MODEL.md: "rationale text
+// ... is printed verbatim by the CLI's status command ... truncate only
+// slices the string, never strips control characters, before a plain
+// tabwriter write. A sufficiently adversarial trigger->prompt->rationale
+// chain could, in principle, inject ANSI escapes into an operator's
+// terminal (cursor manipulation, hidden text)."
+//
+// Ordinary whitespace (tab, newline, carriage return) is preserved since
+// the tabwriter and terminal both rely on it for layout; every other
+// control character (0x00-0x1F, 0x7F, and the UTF-8-encoded C1 range
+// U+0080-U+009F) is dropped.
+func sanitizeControlChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return r
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func newTabWriter(out io.Writer) *tabwriter.Writer {
