@@ -29,12 +29,14 @@ import (
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	"github.com/caelum0x/ration/pkg/telemetry"
 	"github.com/caelum0x/ration/services/gateway/internal/activity"
+	"github.com/caelum0x/ration/services/gateway/internal/authclient"
 	"github.com/caelum0x/ration/services/gateway/internal/cardissuanceclient"
 	"github.com/caelum0x/ration/services/gateway/internal/config"
 	"github.com/caelum0x/ration/services/gateway/internal/grpcserver"
 	"github.com/caelum0x/ration/services/gateway/internal/httpapi"
 	"github.com/caelum0x/ration/services/gateway/internal/ledgerclient"
 	"github.com/caelum0x/ration/services/gateway/internal/ratelimit"
+	"github.com/caelum0x/ration/services/gateway/internal/tenantauth"
 	"github.com/caelum0x/ration/services/gateway/internal/webhookeventsclient"
 	"google.golang.org/grpc"
 )
@@ -80,6 +82,8 @@ func run(log *slog.Logger) error {
 		"ledger_core_addr", cfg.LedgerCoreAddr,
 		"card_issuance_addr", cfg.CardIssuanceAddr,
 		"webhook_ingestion_addr", cfg.WebhookIngestionAddr,
+		"auth_addr", cfg.AuthAddr,
+		"require_tenant_auth", cfg.RequireTenantAuth,
 		"mtls_enabled", cfg.MTLS.Enabled)
 
 	clientDialOpts := []grpc.DialOption{
@@ -131,6 +135,24 @@ func run(log *slog.Logger) error {
 	}
 	defer webhookEvents.Close()
 
+	// auth is dialed unconditionally (same pattern as the three clients
+	// above — gRPC's dial is lazy, so this doesn't block startup even
+	// when cfg.RequireTenantAuth is false) so that flipping
+	// RATION_GATEWAY_REQUIRE_TENANT_AUTH on is a config change, not a
+	// redeploy. See internal/tenantauth's package doc for what this
+	// closes (docs/THREAT-MODEL.md's "Known gaps" item 1).
+	authMTLS := cfg.MTLS
+	authMTLS.ServerName = "auth"
+	authDialCreds, err := authMTLS.DialOption()
+	if err != nil {
+		return err
+	}
+	auth, err := authclient.Dial(cfg.AuthAddr, append([]grpc.DialOption{authDialCreds}, clientDialOpts...)...)
+	if err != nil {
+		return err
+	}
+	defer auth.Close()
+
 	bus := activity.NewBus()
 
 	// Merge services/webhook-ingestion's normalized event stream (e.g.
@@ -170,7 +192,12 @@ func run(log *slog.Logger) error {
 	grpcServer := grpc.NewServer(
 		mtlsServerOpt,
 		telemetry.ServerOption(),
-		grpc.ChainUnaryInterceptor(telemetry.UnaryServerInterceptor(log), met.UnaryServerInterceptor(), ratelimit.UnaryServerInterceptor(limiter)),
+		grpc.ChainUnaryInterceptor(
+			telemetry.UnaryServerInterceptor(log),
+			met.UnaryServerInterceptor(),
+			ratelimit.UnaryServerInterceptor(limiter),
+			tenantauth.UnaryServerInterceptor(auth, cfg.RequireTenantAuth),
+		),
 		grpc.ChainStreamInterceptor(telemetry.StreamServerInterceptor(log), met.StreamServerInterceptor(), ratelimit.StreamServerInterceptor(limiter)),
 	)
 	gatewaypb.RegisterGatewayServer(grpcServer, srv)

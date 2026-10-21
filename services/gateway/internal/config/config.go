@@ -22,6 +22,7 @@ type Config struct {
 	LedgerCoreAddr       string
 	CardIssuanceAddr     string
 	WebhookIngestionAddr string
+	AuthAddr             string
 
 	GatewayGRPCAddr string
 	MetricsAddr     string
@@ -52,6 +53,13 @@ type Config struct {
 	RateLimitRPS           float64
 	RateLimitBurst         float64
 	RateLimitSweepInterval time.Duration
+
+	// RequireTenantAuth gates internal/tenantauth's interceptor
+	// (docs/THREAT-MODEL.md's "Known gaps" item 1): off by default, the
+	// same opt-in pattern as MTLS.Enabled above, since the demo/CLI/TUI
+	// flows don't present a credential on every call yet (see
+	// internal/tenantauth's package doc for the precise follow-up TODO).
+	RequireTenantAuth bool
 }
 
 // Load reads configuration from the process environment and validates it.
@@ -64,6 +72,7 @@ func Load() (*Config, error) {
 		// internal/config for the same comment.
 		CardIssuanceAddr:     getenvDefault("CARD_ISSUANCE_ADDR", "localhost:7012"),
 		WebhookIngestionAddr: getenvDefault("WEBHOOK_INGESTION_ADDR", "localhost:7013"),
+		AuthAddr:             getenvDefault("AUTH_ADDR", "localhost:7010"),
 
 		GatewayGRPCAddr: getenvDefault("GATEWAY_GRPC_ADDR", "localhost:7002"),
 		MetricsAddr:     getenvDefault("GATEWAY_METRICS_ADDR", "localhost:9091"),
@@ -92,6 +101,11 @@ func Load() (*Config, error) {
 	}
 	cfg.RateLimitSweepInterval = time.Duration(sweepMinutes) * time.Minute
 
+	cfg.RequireTenantAuth, err = getenvBoolDefault("RATION_GATEWAY_REQUIRE_TENANT_AUTH", false)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -107,6 +121,9 @@ func (c *Config) validate() error {
 	}
 	if c.WebhookIngestionAddr == "" {
 		return fmt.Errorf("config: WEBHOOK_INGESTION_ADDR must not be empty")
+	}
+	if c.AuthAddr == "" {
+		return fmt.Errorf("config: AUTH_ADDR must not be empty")
 	}
 	if c.GatewayGRPCAddr == "" {
 		return fmt.Errorf("config: GATEWAY_GRPC_ADDR must not be empty")
@@ -149,4 +166,16 @@ func getenvInt64Default(key string, def int64) (int64, error) {
 		return 0, fmt.Errorf("config: invalid %s=%q: %w", key, v, err)
 	}
 	return i, nil
+}
+
+func getenvBoolDefault(key string, def bool) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("config: invalid %s=%q: %w", key, v, err)
+	}
+	return b, nil
 }

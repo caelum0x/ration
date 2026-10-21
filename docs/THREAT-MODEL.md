@@ -34,12 +34,14 @@ precise TODO instead of a vague "should add auth later."
 ┌────────┐ ┌──────────────┐ ┌──────────────┐  │ RecordDeposit, ...)
 │  auth  │ │tenant-registry│ │card-issuance │  │
 │ :7010  │ │    :7011      │ │   :7012      │  │
-│(not yet│ │ (tenant CRUD, │ │ Airwallex    │  │
-│ wired  │ │  proxies to   │ │ issuing +    │  │
-│ into   │ │  ledger-core) │ │ bridge math, │  │
-│ gateway│ └──────┬────────┘ │ the highest- │  │
-│  — see │        │ gRPC     │ value RPCs)  │  │
-│ gap 1) │        │          └──────┬───────┘  │
+│VerifyAPI│ │ (tenant CRUD, │ │ Airwallex    │  │
+│Key/JWT │ │  proxies to   │ │ issuing +    │  │
+│ called │ │  ledger-core) │ │ bridge math, │  │
+│by gw's │ └──────┬────────┘ │ the highest- │  │
+│tenant- │        │ gRPC     │ value RPCs)  │  │
+│auth,   │        │          └──────┬───────┘  │
+│opt-in  │        │                 │           │
+│(gap 1) │        │                 │           │
 └────────┘        │                 │ gRPC      │
                    ▼                 ▼           ▼
 ┌─────────────────────────────────────────────────────┐
@@ -209,20 +211,22 @@ own.
 
 The four section-1 split services (docs/adr/0004) share a common shape
 for this analysis: each is reachable only from gateway (card-issuance,
-tenant-registry), from gateway plus the public internet (webhook-
-ingestion's HTTP listener), or from nothing yet (auth — see gap 1), and
-each has no more effective privilege against `ledger-core` than gateway
+tenant-registry, and now auth too — gateway's `internal/tenantauth`
+dials auth's `VerifyAPIKey`/`VerifyJWT` when
+`RATION_GATEWAY_REQUIRE_TENANT_AUTH` is set, see gap 1), from gateway
+plus the public internet (webhook-ingestion's HTTP listener), and each
+has no more effective privilege against `ledger-core` than gateway
 itself already has, since none of them does anything gateway couldn't
 also ask ledger-core to do directly.
 
 | STRIDE | Assessment |
 |---|---|
 | **S**poofing | Same mTLS story as every other internal service — opt-in, off by default (`CARD_ISSUANCE_MTLS_*`/`WEBHOOK_INGESTION_MTLS_*`/`AUTH_MTLS_*`/`TENANT_REGISTRY_MTLS_*`, `infra/dev-ca/`'s `SERVICES` list now includes all four). |
-| **T**ampering | card-issuance can call `ApplyEntry`/`RecordDeposit` via its own `ledgerclient` for any tenant — identical reach to what gateway had pre-split for card/bridge operations. tenant-registry can call `CreateTenant`/`ListTenants`. webhook-ingestion can call `MarkDepositReceived`. auth mutates only its own in-memory API-key/JWT/CA state (`internal/apikey`, `internal/jwtauth`, `internal/servicecertca`) — it has no ledger-core dependency at all (see its own `internal/config` doc comment), so a compromised auth cannot touch money state directly, only mint credentials nothing currently checks (gap 1). |
+| **T**ampering | card-issuance can call `ApplyEntry`/`RecordDeposit` via its own `ledgerclient` for any tenant — identical reach to what gateway had pre-split for card/bridge operations. tenant-registry can call `CreateTenant`/`ListTenants`. webhook-ingestion can call `MarkDepositReceived`. auth mutates only its own in-memory API-key/JWT/CA state (`internal/apikey`, `internal/jwtauth`, `internal/servicecertca`) — it has no ledger-core dependency at all (see its own `internal/config` doc comment), so a compromised auth cannot touch money state directly; it can mint credentials that gateway's `tenantauth` interceptor now checks when `RATION_GATEWAY_REQUIRE_TENANT_AUTH` is enabled, but nothing checks them on `ledger-core`'s own surface or when that flag is off, the default (gap 1). |
 | **R**epudiation | card-issuance's and webhook-ingestion's ledger-core calls are mirrored into `audit-log` exactly like gateway's were pre-split (the mirror lives in `ledger-core`, not in the caller) — same guarantee, one hop earlier in the call chain now. |
-| **I**nformation disclosure | card-issuance uniquely holds `AIRWALLEX_API_KEY`/`AIRWALLEX_CLIENT_ID`; webhook-ingestion uniquely holds `AIRWALLEX_WEBHOOK_SECRET` — compromising either one is strictly *less* exposure than the pre-split gateway holding both plus every ledger-core RPC's reach in one process. auth holds `AUTH_JWT_SIGNING_KEY`, a secret with no current blast radius (nothing verifies the JWTs it mints yet — gap 1) but a real one the day that wiring lands: a leaked signing key would let an attacker mint valid-looking tenant-scoped tokens for any tenant. |
+| **I**nformation disclosure | card-issuance uniquely holds `AIRWALLEX_API_KEY`/`AIRWALLEX_CLIENT_ID`; webhook-ingestion uniquely holds `AIRWALLEX_WEBHOOK_SECRET` — compromising either one is strictly *less* exposure than the pre-split gateway holding both plus every ledger-core RPC's reach in one process. auth holds `AUTH_JWT_SIGNING_KEY`, a secret whose blast radius now depends on `RATION_GATEWAY_REQUIRE_TENANT_AUTH`: with it enabled, a leaked signing key lets an attacker mint valid-looking tenant-scoped tokens that pass gateway's `tenantauth` check for any tenant; with it at its default (disabled), the blast radius is still nominal since nothing enforces the result either way (gap 1). |
 | **D**enial of service | Each is an independent deployable (its own `go.mod`, its own container, its own autoscaling policy per `infra/terraform/modules/service` once applied) — flooding one (e.g. a webhook replay storm against webhook-ingestion) no longer starves the others' capacity the way one shared gateway process would have pre-split. This is the specific scaling property section 1 asked for. |
-| **E**levation of privilege | card-issuance/tenant-registry/webhook-ingestion: same ceiling as gateway already had for their respective slice of gateway.proto's old surface — no new privilege created by the split. auth: **the interesting one** — `IssueServiceCert`/`MintJWT` exist today with no caller-side authorization of their own (anyone who can reach auth's gRPC port can mint a JWT for any `tenant_id`/subject, or a service cert for any `service_name`) because nothing calls them yet (gap 1) — once something *does* depend on auth's output for real authorization, auth itself becomes as privileged as whatever trusts it, and needs its own access control, not just "it exists." |
+| **E**levation of privilege | card-issuance/tenant-registry/webhook-ingestion: same ceiling as gateway already had for their respective slice of gateway.proto's old surface — no new privilege created by the split. auth: **the interesting one** — `IssueServiceCert`/`MintJWT` exist with no caller-side authorization of their own (anyone who can reach auth's gRPC port can mint a JWT for any `tenant_id`/subject, or a service cert for any `service_name`); gateway's `tenantauth` now depends on auth's `VerifyAPIKey`/`VerifyJWT` output for real authorization when enabled, which means auth itself is now exactly as privileged as whatever trusts it says, and needs its own access control on `IssueAPIKey`/`MintJWT`/`IssueServiceCert` — those three remain uncontrolled minting endpoints today, not just "unused" ones (gap 1). |
 
 ### 7. A compromised `agent`
 
@@ -290,31 +294,39 @@ single source of truth.
 
 ## Known gaps (precise, scoped — not glossed over)
 
-1. **No tenant-scoped authorization anywhere, still.** Every RPC that
-   takes a `tenant_id` (`ledger-core`'s entire surface, `gateway`'s
-   entire surface) trusts whatever `tenant_id` the caller supplies —
-   there is no notion of "this caller is only allowed to act as tenant
-   X." `services/auth` now exists (`docs/SCALE-EXPANSION.md` section 1)
-   and its `IssueAPIKey`/`VerifyAPIKey`/`MintJWT`/`VerifyJWT` RPCs all
-   work correctly in isolation (`internal/apikey`, `internal/jwtauth`
-   are both unit-tested) — but **nothing calls them yet**: `gateway`'s
-   `internal/grpcserver` does not dial auth at all, and no RPC in
-   `ledger.proto`/`gateway.proto`/`card_issuance.proto`/
-   `tenant_registry.proto` checks a caller-presented API key or JWT
-   before acting. auth shipping as a service changes nothing about this
-   gap by itself — it only becomes a mitigation the day gateway (or
-   each split service directly) actually verifies a credential before
-   proxying a tenant-scoped call. mTLS proves service identity ("this
-   is really gateway calling"), never tenant identity ("this call is
-   authorized to touch tenant X's money"), and auth existing-but-unwired
-   doesn't change that either. This is the single biggest residual risk
-   in the system today and the reason this repo is explicitly
-   pre-production. **Precise TODO**: wire `gateway`'s `internal/
-   grpcserver` (or a shared interceptor every split service imports) to
-   call `auth.VerifyAPIKey`/`VerifyJWT` on every tenant-scoped RPC and
-   reject a mismatch between the verified identity's `tenant_id` and the
-   request's `tenant_id`, before this is safe to run with real
-   tenants/real money.
+1. **No tenant-scoped authorization anywhere, still — partially
+   mitigated on gateway's own surface, opt-in, off by default.** Every
+   RPC that takes a `tenant_id` trusts whatever `tenant_id` the caller
+   supplies by default — there is no notion of "this caller is only
+   allowed to act as tenant X" unless the mitigation below is switched
+   on. `services/gateway/internal/tenantauth` now calls
+   `auth.VerifyAPIKey`/`VerifyJWT` (via `internal/authclient`) on every
+   unary RPC on gateway's own `gateway.proto` surface that carries a
+   `tenant_id` field, and rejects a mismatch between the verified
+   identity's `tenant_id` and the request's own (`codes.PermissionDenied`)
+   or a missing/invalid credential (`codes.Unauthenticated`) — gated by
+   `RATION_GATEWAY_REQUIRE_TENANT_AUTH`, **false by default** (same
+   opt-in pattern as `GATEWAY_MTLS_ENABLED`), because the demo/CLI/TUI
+   flows don't present a credential on every call yet; flipping the
+   default on today would turn every demo RPC into a rejection, not a
+   safer demo. Three precise residual gaps, named rather than glossed
+   over: (a) `GetCard`/`AdjustCardLimit` key off `card_id`, not
+   `tenant_id`, so `tenantauth` — like `internal/ratelimit`'s identical,
+   already-documented limitation — passes them through unchecked;
+   (b) `StreamActivity` is a streaming RPC, outside this interceptor's
+   scope (it only wraps `grpc.ChainUnaryInterceptor`), and still allows
+   an empty `tenant_id` ("all tenants") with no check at all; (c) the
+   biggest one — `cli`/`tui`/`agent` can all dial `ledger-core` directly
+   (see actor 1 above), bypassing `gateway` and `tenantauth` entirely,
+   so this mitigation only closes the gap for traffic that actually
+   goes through `gateway`, not the system's full tenant-authorization
+   gap. **Precise TODO**: wire `services/cli`/`services/tui` to call
+   `auth.IssueAPIKey`/`MintJWT` once and present the result as
+   `x-api-key`/`authorization: Bearer <jwt>` metadata on every gateway
+   call, flip `RATION_GATEWAY_REQUIRE_TENANT_AUTH` to true by default
+   once they do, and either add the same check to `ledger-core`'s own
+   gRPC surface or stop letting `cli`/`tui`/`agent` dial it directly —
+   before any of this is safe to run with real tenants/real money.
 2. **`audit-log` trusts the claimed `source_service` field verbatim —
    fixed for the mTLS-enabled case, unavoidable otherwise.**
    `AppendRequest.source_service` is attacker-controlled data from
