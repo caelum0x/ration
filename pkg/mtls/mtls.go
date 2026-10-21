@@ -30,6 +30,7 @@
 package mtls
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -40,6 +41,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/peer"
 )
 
 // Config holds one service's TLS identity (cert/key) and the CA used to
@@ -199,6 +201,42 @@ func (c Config) ServerOption() (grpc.ServerOption, error) {
 		return nil, err
 	}
 	return grpc.Creds(credentials.NewTLS(tlsCfg)), nil
+}
+
+// PeerCommonName extracts the CommonName of the verified leaf
+// certificate the caller presented on this gRPC call, if any. It
+// returns ok=false whenever there is no cryptographically-verified
+// peer identity to report — a plaintext connection (mTLS disabled, the
+// default), a TLS connection that isn't mutual, or a call made outside
+// a gRPC server handler entirely — never a zero-value CommonName
+// mistaken for a real one.
+//
+// This is the building block for closing docs/THREAT-MODEL.md's
+// "Known gaps" item 2 (audit-log trusting a client-claimed
+// source_service verbatim): a handler can call this once mTLS makes a
+// verified identity available and bind an attacker-controlled field to
+// the transport-authenticated one instead of trusting it blindly. It
+// deliberately does not fall back to anything client-supplied — the
+// whole point is that this value, when present, did not come from a
+// request field an attacker controls.
+func PeerCommonName(ctx context.Context) (string, bool) {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.AuthInfo == nil {
+		return "", false
+	}
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return "", false
+	}
+	chains := tlsInfo.State.PeerCertificates
+	if len(chains) == 0 {
+		return "", false
+	}
+	cn := chains[0].Subject.CommonName
+	if cn == "" {
+		return "", false
+	}
+	return cn, true
 }
 
 // DialOption returns the grpc.DialOption to pass to grpc.NewClient (or

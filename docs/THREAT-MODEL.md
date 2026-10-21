@@ -315,20 +315,22 @@ single source of truth.
    reject a mismatch between the verified identity's `tenant_id` and the
    request's `tenant_id`, before this is safe to run with real
    tenants/real money.
-2. **`audit-log` trusts the claimed `source_service` field verbatim.**
+2. **`audit-log` trusts the claimed `source_service` field verbatim —
+   fixed for the mTLS-enabled case, unavoidable otherwise.**
    `AppendRequest.source_service` is attacker-controlled data from
-   audit-log's point of view — with mTLS *disabled* (the default),
-   nothing binds "the gRPC caller's transport identity" to "the
-   `source_service` string it claims." A compromised `agent` could call
-   `audit-log.Append` directly with `source_service: "ledger-core"` and
-   forge an entry that looks like it came from the authoritative
-   ledger. **Precise TODO**: once mTLS is enabled, have
-   `services/audit-log/internal/grpcserver/server.go`'s `Append`
-   extract the caller's verified certificate CN (available via
-   `tonic`/`grpc-go`'s peer info) and either overwrite
-   `source_service` with it or reject a mismatch, rather than trusting
-   the request body's field. Until mTLS is mandatory (not just
-   opt-in) in a given deployment, this gap is unavoidable.
+   audit-log's point of view. `Append`
+   (`services/audit-log/internal/grpcserver/server.go`) now calls
+   `pkg/mtls.PeerCommonName` and, whenever it returns a verified
+   identity, overwrites `source_service` with that CN rather than the
+   request's own field — a compromised `agent` presenting its own
+   genuine cert can no longer call `audit-log.Append` claiming
+   `source_service: "ledger-core"` and have it stick. With mTLS
+   *disabled* (the default, and still the common case in this repo
+   today), there is no verified identity for `PeerCommonName` to
+   return, so `Append` falls back to the request's own field exactly
+   as before and this gap remains open in that mode. Until mTLS is
+   mandatory (not just opt-in) in a given deployment, that residual
+   case is unavoidable.
 3. **No operational cross-check between ledger-core's own entry count
    and audit-log's mirrored count.** `AuditMirror` is best-effort by
    design (never blocks `ApplyEntry`), which means a sustained

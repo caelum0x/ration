@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/caelum0x/ration/pkg/mtls"
 	auditpb "github.com/caelum0x/ration/pkg/pb/audit"
 	"github.com/caelum0x/ration/services/audit-log/internal/store"
 	"google.golang.org/grpc/codes"
@@ -52,6 +53,23 @@ func toPBRecord(r store.Record) *auditpb.AuditRecord {
 }
 
 // Append implements auditpb.AuditLogServer.
+//
+// AppendRequest.SourceService is, from this handler's point of view,
+// attacker-controlled data (docs/THREAT-MODEL.md's "Known gaps" item
+// 2): with mTLS disabled (the default) nothing binds the gRPC caller's
+// transport identity to the source_service string it claims, so a
+// compromised agent could call Append with
+// source_service: "ledger-core" and forge an entry that looks like it
+// came from the authoritative ledger. When mTLS *is* enabled, the
+// caller presented a certificate the shared internal CA signed for a
+// specific service name — that verified identity is strictly more
+// trustworthy than a request field, so it overrides whatever
+// source_service the request claims rather than merely checking it
+// (a compromised caller gets no vote in what the audit trail says
+// about who it is). With mTLS disabled there is no verified identity
+// to bind to, so the request's own field is used as before — this gap
+// is unavoidable until mTLS is mandatory, exactly as the threat model
+// documents.
 func (s *Server) Append(ctx context.Context, req *auditpb.AppendRequest) (*auditpb.AppendResponse, error) {
 	if req.GetSourceService() == "" {
 		return nil, status.Error(codes.InvalidArgument, "source_service is required")
@@ -59,8 +77,12 @@ func (s *Server) Append(ctx context.Context, req *auditpb.AppendRequest) (*audit
 	if req.GetRefId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "ref_id is required")
 	}
+	sourceService := req.GetSourceService()
+	if verifiedCN, ok := mtls.PeerCommonName(ctx); ok {
+		sourceService = verifiedCN
+	}
 	rec, err := s.store.Append(store.AppendInput{
-		SourceService:  req.GetSourceService(),
+		SourceService:  sourceService,
 		Kind:           toStoreKind(req.GetKind()),
 		TenantID:       req.GetTenantId(),
 		RefID:          req.GetRefId(),

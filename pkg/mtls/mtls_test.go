@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -16,6 +17,8 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -296,6 +299,51 @@ func TestMTLS_ClientWithUntrustedCAIsRejected(t *testing.T) {
 	_, err = client.Check(ctx, &healthpb.HealthCheckRequest{})
 	if err == nil {
 		t.Fatalf("expected a client cert from an untrusted CA to be rejected")
+	}
+}
+
+// --- PeerCommonName -----------------------------------------------------
+
+func TestPeerCommonName_NoPeerInContext(t *testing.T) {
+	_, ok := PeerCommonName(context.Background())
+	if ok {
+		t.Fatalf("expected ok=false for a context with no peer info at all")
+	}
+}
+
+func TestPeerCommonName_PlaintextPeerHasNoIdentity(t *testing.T) {
+	ctx := peer.NewContext(context.Background(), &peer.Peer{
+		Addr:     &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1234},
+		AuthInfo: nil,
+	})
+	_, ok := PeerCommonName(ctx)
+	if ok {
+		t.Fatalf("expected ok=false for a plaintext peer (no AuthInfo)")
+	}
+}
+
+func TestPeerCommonName_VerifiedMTLSPeerReturnsLeafCN(t *testing.T) {
+	ca := newTestCA(t)
+	leafPEM, _ := ca.issueLeaf(t, "card-issuance-test", 7)
+	block, _ := pem.Decode(leafPEM)
+	leafCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse leaf cert: %v", err)
+	}
+
+	ctx := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1234},
+		AuthInfo: credentials.TLSInfo{
+			State: tls.ConnectionState{PeerCertificates: []*x509.Certificate{leafCert}},
+		},
+	})
+
+	cn, ok := PeerCommonName(ctx)
+	if !ok {
+		t.Fatalf("expected ok=true for a verified mTLS peer")
+	}
+	if cn != "card-issuance-test" {
+		t.Errorf("CommonName = %q, want %q", cn, "card-issuance-test")
 	}
 }
 
