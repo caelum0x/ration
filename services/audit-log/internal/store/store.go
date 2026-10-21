@@ -295,3 +295,81 @@ func (s *Store) VerifyChain() VerifyChainResult {
 	}
 	return VerifyChainResult{Intact: true, RecordsChecked: int64(len(s.records))}
 }
+
+// VerifyFile re-derives the hash chain directly from the append-only
+// file at path, independently of any running Store/audit-log process.
+// This is the "independent verifier" docs/THREAT-MODEL.md's "Known
+// gaps" section 9 asks for: VerifyChain (above) is only trustworthy if
+// the audit-log binary serving that RPC is itself uncompromised — a
+// compromised audit-log could simply lie about the result. VerifyFile
+// opens path read-only (O_RDONLY, never O_RDWR — this must never
+// require write access or risk mutating the file it's auditing) and
+// performs the exact same per-record checks replay() does, but reports
+// every failure as a VerifyChainResult (Intact=false, Detail
+// populated) rather than a Go error, so a caller (see
+// cmd/verify-chain) can always print a verdict instead of only "it
+// crashed." The one exception is a file the OS itself refuses to open
+// or read — that's reported as the returned error, since there is no
+// chain to report a verdict about at all in that case.
+func VerifyFile(path string) (VerifyChainResult, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY, 0)
+	if err != nil {
+		return VerifyChainResult{}, fmt.Errorf("store: open %s read-only: %w", path, err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+
+	prevHash := ""
+	wantSeq := int64(1)
+	var checked int64
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var rec Record
+		if err := json.Unmarshal(line, &rec); err != nil {
+			return VerifyChainResult{
+				Intact:              false,
+				RecordsChecked:      checked,
+				FirstBrokenSequence: wantSeq,
+				Detail:              fmt.Sprintf("line %d: corrupt record: %v", lineNo, err),
+			}, nil
+		}
+		if rec.PrevHash != prevHash {
+			return VerifyChainResult{
+				Intact:              false,
+				RecordsChecked:      checked,
+				FirstBrokenSequence: rec.Sequence,
+				Detail:              fmt.Sprintf("sequence %d: prev_hash %q does not match preceding record's hash %q", rec.Sequence, rec.PrevHash, prevHash),
+			}, nil
+		}
+		if rec.Sequence != wantSeq {
+			return VerifyChainResult{
+				Intact:              false,
+				RecordsChecked:      checked,
+				FirstBrokenSequence: rec.Sequence,
+				Detail:              fmt.Sprintf("line %d: non-contiguous sequence: got %d, want %d", lineNo, rec.Sequence, wantSeq),
+			}, nil
+		}
+		if hashOf(rec) != rec.Hash {
+			return VerifyChainResult{
+				Intact:              false,
+				RecordsChecked:      checked,
+				FirstBrokenSequence: rec.Sequence,
+				Detail:              fmt.Sprintf("sequence %d: stored hash does not match recomputed hash", rec.Sequence),
+			}, nil
+		}
+		prevHash = rec.Hash
+		wantSeq = rec.Sequence + 1
+		checked++
+	}
+	if err := scanner.Err(); err != nil {
+		return VerifyChainResult{}, fmt.Errorf("store: reading %s: %w", path, err)
+	}
+	return VerifyChainResult{Intact: true, RecordsChecked: checked}, nil
+}

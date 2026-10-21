@@ -238,3 +238,105 @@ func TestVerifyChain_DetectsHashMismatchWithoutFileTamper(t *testing.T) {
 		t.Fatalf("expected first_broken_sequence=1, got %d", result.FirstBrokenSequence)
 	}
 }
+
+func TestVerifyFile_IntactChainReportsAllRecordsChecked(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.Append(AppendInput{SourceService: "ledger-core", Kind: SourceKindLedgerEntry, RefID: "entry-1", PayloadJSON: "{}"}, 1); err != nil {
+		t.Fatalf("Append 1: %v", err)
+	}
+	if _, err := s.Append(AppendInput{SourceService: "ledger-core", Kind: SourceKindAgentDecision, RefID: "decision-1", PayloadJSON: "{}"}, 2); err != nil {
+		t.Fatalf("Append 2: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	result, err := VerifyFile(path)
+	if err != nil {
+		t.Fatalf("VerifyFile: %v", err)
+	}
+	if !result.Intact {
+		t.Fatalf("expected VerifyFile to report an intact chain, got %+v", result)
+	}
+	if result.RecordsChecked != 2 {
+		t.Fatalf("expected 2 records checked, got %d", result.RecordsChecked)
+	}
+}
+
+func TestVerifyFile_DetectsTamperWithoutTheLiveStoreAtAll(t *testing.T) {
+	// This is the whole point of VerifyFile (docs/THREAT-MODEL.md's
+	// "Known gaps" item 9): no Store is ever opened in this test, only
+	// VerifyFile reading the raw bytes directly — proving the check
+	// works even when nothing resembling the audit-log binary is
+	// running or trusted.
+	path := filepath.Join(t.TempDir(), "audit.log")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.Append(AppendInput{SourceService: "ledger-core", Kind: SourceKindLedgerEntry, RefID: "entry-1", PayloadJSON: "{}"}, 1); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	tampered := []byte(replaceOnce(string(raw), `"payload_json":"{}"`, `"payload_json":"{\"tampered\":true}"`))
+	if err := os.WriteFile(path, tampered, 0o600); err != nil {
+		t.Fatalf("write tampered file: %v", err)
+	}
+
+	result, err := VerifyFile(path)
+	if err != nil {
+		t.Fatalf("VerifyFile: unexpected I/O error: %v", err)
+	}
+	if result.Intact {
+		t.Fatalf("expected VerifyFile to detect the tampered record, got intact=true")
+	}
+	if result.FirstBrokenSequence != 1 {
+		t.Fatalf("expected first_broken_sequence=1, got %d", result.FirstBrokenSequence)
+	}
+}
+
+func TestVerifyFile_MissingFileIsAnErrorNotAFalsePass(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does-not-exist.log")
+	if _, err := VerifyFile(path); err == nil {
+		t.Fatalf("expected VerifyFile to error on a missing file, got nil (would otherwise look like an empty, intact chain)")
+	}
+}
+
+func TestVerifyFile_NeverOpensForWrite(t *testing.T) {
+	// A read-only file must still be verifiable — VerifyFile must never
+	// need write access to the log it's auditing.
+	path := filepath.Join(t.TempDir(), "audit.log")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.Append(AppendInput{SourceService: "ledger-core", Kind: SourceKindLedgerEntry, RefID: "entry-1", PayloadJSON: "{}"}, 1); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatalf("chmod read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	result, err := VerifyFile(path)
+	if err != nil {
+		t.Fatalf("VerifyFile on a read-only file: %v", err)
+	}
+	if !result.Intact {
+		t.Fatalf("expected intact chain, got %+v", result)
+	}
+}

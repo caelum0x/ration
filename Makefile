@@ -21,6 +21,7 @@ build-go:
 	cd services/tui && go build -o ../../bin/tui ./cmd/tui
 	cd services/cli && go build -o ../../bin/ration ./cmd/ration
 	cd services/audit-log && go build -o ../../bin/audit-log ./cmd/audit-log
+	cd services/audit-log && go build -o ../../bin/verify-chain ./cmd/verify-chain
 
 # sdk/go/ration and sdk/rust/ration-client (docs/SCALE-EXPANSION.md
 # section 7) are libraries, not deployables — "build" here means a
