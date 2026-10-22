@@ -105,6 +105,18 @@ func (h *Handler) handleAirwallexWebhook(w http.ResponseWriter, r *http.Request)
 // sufficient for the single-deposit-at-a-time demo scenarios this
 // project targets, and is intentionally conservative: if nothing matches,
 // it logs and returns success rather than guessing.
+//
+// Deposits already marked received (ReceivedAtUnix != 0) are excluded
+// from the candidate set entirely — not just preferred against. Without
+// this, a tenant with two deposits of the same amount (e.g. two $500
+// recurring deposits) where the older one already settled would have a
+// genuinely new webhook for the newer deposit re-match the older,
+// already-received one (it's still the "oldest" expected_at_unix in an
+// amount-only comparison). MarkDepositReceived then no-ops against the
+// already-Received deposit (ledger-core's own idempotency), silently
+// discarding the real money: the new deposit never gets marked received
+// and the tenant's available balance never reflects funds that actually
+// arrived.
 func (h *Handler) handleTransactionCreated(ctx context.Context, env *airwallex.WebhookEnvelope) error {
 	var payload airwallex.GlobalAccountTransactionPayload
 	if err := json.Unmarshal(env.Data, &payload); err != nil {
@@ -121,6 +133,11 @@ func (h *Handler) handleTransactionCreated(ctx context.Context, env *airwallex.W
 
 	var match *ledgerpb.Deposit
 	for _, d := range deposits {
+		if d.GetReceivedAtUnix() != 0 {
+			// Already settled — never a valid candidate for a new
+			// transaction event, regardless of amount or age.
+			continue
+		}
 		if d.GetExpectedAmount().GetMinorUnits() != payload.AmountMinorUnits {
 			continue
 		}
