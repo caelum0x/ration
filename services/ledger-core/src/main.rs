@@ -5,6 +5,7 @@ use std::sync::Arc;
 use ledger_core::audit_mirror::AuditMirror;
 use ledger_core::grpc::LedgerCoreService;
 use ledger_core::ledger::Ledger;
+use ledger_core::metrics::Metrics;
 use ledger_core::mtls;
 use ledger_core::pb::ration::ledger::v1::ledger_core_server::LedgerCoreServer;
 use ledger_core::telemetry::TracedService;
@@ -73,13 +74,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // for this var, set on every service that mirrors into audit-log)
     // — leaving it unset disables mirroring entirely rather than
     // dialing a default address nothing may be listening on.
+    // Prometheus metrics (docs/THREAT-MODEL.md's "Known gaps" #3,
+    // docs/SLO.md's "ledger-core" section): ledger-core's first
+    // /metrics endpoint, scoped to the audit-mirror spawn_append
+    // failure counter that gap names precisely. Binding failures are
+    // logged and non-fatal — like OTLP export and audit-log mirroring,
+    // observability must never become a new way for the ledger to go
+    // down.
+    let metrics = Arc::new(Metrics::new());
+    let metrics_addr_str = env_or("LEDGER_CORE_METRICS_ADDR", "localhost:9099");
+    match resolve_bind_addr(&metrics_addr_str) {
+        Ok(metrics_addr) => {
+            let metrics_for_server = Arc::clone(&metrics);
+            tokio::spawn(async move {
+                if let Err(err) =
+                    ledger_core::metrics::serve(metrics_for_server, metrics_addr).await
+                {
+                    tracing::warn!(error = %err, %metrics_addr, "metrics: /metrics server exited");
+                }
+            });
+            tracing::info!(%metrics_addr, "ledger-core /metrics listening");
+        }
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                %metrics_addr_str,
+                "metrics: failed to resolve LEDGER_CORE_METRICS_ADDR, /metrics disabled"
+            );
+        }
+    }
+
     let audit_log_addr = env_or("AUDIT_LOG_ADDR", "");
     let audit_mirror = if audit_log_addr.is_empty() {
         tracing::info!("AUDIT_LOG_ADDR is unset; audit-log mirroring disabled");
-        AuditMirror::disabled()
+        AuditMirror::disabled(Arc::clone(&metrics))
     } else {
         tracing::info!(%audit_log_addr, "audit-log mirror configured");
-        AuditMirror::connect(&audit_log_addr, &mtls_cfg)?
+        AuditMirror::connect(&audit_log_addr, &mtls_cfg, Arc::clone(&metrics))?
     };
 
     let service = LedgerCoreService::new(Arc::new(ledger), audit_mirror);

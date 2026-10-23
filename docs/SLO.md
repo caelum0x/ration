@@ -65,15 +65,20 @@ section 2. So a trace started by a CLI/TUI command or an agent tick now
 extends all the way into `ledger-core`'s own `ApplyEntry` span, visible
 in Grafana/Tempo/Jaeger by `trace_id`.
 
-What's still missing is the **metrics** half:
-**no `pkg/metrics`-equivalent Prometheus endpoint exists for
-`ledger-core` at all** — `Cargo.toml` has no `prometheus` crate (or
-`opentelemetry_sdk`'s metrics pipeline wired up), and there is no
-`/metrics` HTTP listener bound anywhere in `main.rs`. Until that lands,
-there is no PromQL query that can check this table's latency/
-availability targets for `ledger-core` directly from scraped metrics
-(traces give per-request timing, but not the aggregated
-histograms/counters this table's targets are phrased against); the
+What's still missing is the **full `pkg/metrics`-equivalent** half:
+`ledger-core` now has one Prometheus counter and one `/metrics` HTTP
+listener (`src/metrics.rs`, bound in `main.rs` at
+`LEDGER_CORE_METRICS_ADDR`, scraped per
+`infra/prometheus/prometheus.yml`'s `ledger-core` job) — but that
+counter is scoped narrowly to `docs/THREAT-MODEL.md`'s "Known gaps" #3
+(audit-mirror `spawn_append` failures), not this table's per-RPC
+latency/availability targets. There is still no
+`ledger_core_grpc_server_requests_total` /
+`..._request_duration_seconds` pair (the Go services' `pkg/metrics`
+equivalent) for `ApplyEntry` or any other RPC, so no PromQL query can
+check this table's targets directly from scraped metrics yet (traces
+give per-request timing, but not the aggregated histograms/counters
+this table's targets are phrased against); the
 fallback diagnostics are `RUNBOOK.md`'s "ledger-core won't start" /
 "negative headroom" entries, a trace-based p50/p99 read against
 whatever backend `infra/otel-collector` exports spans to, and

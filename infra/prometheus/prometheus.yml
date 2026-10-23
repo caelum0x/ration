@@ -9,13 +9,12 @@
 # with every service started via `make run-*`), replace each target with
 # "localhost:<port>" instead.
 #
-# ledger-core (Rust) is deliberately absent from scrape_configs below:
-# it has no Prometheus /metrics endpoint yet (tracing is wired — see
-# services/ledger-core/src/telemetry.rs — metrics are not; the exact,
-# precise gap is documented in docs/SLO.md's "ledger-core" section).
-# Adding a scrape target for a port nothing listens on would just show
-# as permanently "down" in Prometheus with no diagnostic value; add the
-# target here the same day that gap closes.
+# ledger-core (Rust) now exposes a /metrics endpoint too
+# (services/ledger-core/src/metrics.rs), scoped to the single counter
+# docs/THREAT-MODEL.md's "Known gaps" #3 names
+# (ledger_core_audit_mirror_spawn_append_failures_total); the broader
+# per-RPC request/latency instrumentation the Go services have is a
+# separate, still-open TODO (docs/SLO.md's "ledger-core" section).
 
 global:
   scrape_interval: 15s
@@ -29,6 +28,10 @@ scrape_configs:
   - job_name: otel-collector
     static_configs:
       - targets: ["otel-collector:8888"]
+
+  - job_name: ledger-core
+    static_configs:
+      - targets: ["ledger-core:9099"]
 
   - job_name: gateway
     static_configs:

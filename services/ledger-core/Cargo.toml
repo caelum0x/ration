@@ -43,6 +43,12 @@ tonic-tracing-opentelemetry = "0.42.1"
 # and references http::{Request,Response} by name.
 http = "1"
 tower = "0.4"
+# Rust counterpart of pkg/metrics's prometheus/client_golang choice on
+# the Go side (docs/SLO.md's "ledger-core" section names this crate
+# directly). default-features = false skips the optional "protobuf"
+# exposition format — Prometheus's text format (TextEncoder, always
+# available) is all services/ledger-core/src/metrics.rs uses.
+prometheus = { version = "0.13", default-features = false }
 
 [build-dependencies]
 cc = "1"

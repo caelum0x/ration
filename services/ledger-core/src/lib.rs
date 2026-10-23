@@ -11,6 +11,7 @@ pub mod audit_mirror;
 pub mod deposit;
 pub mod error;
 pub mod ledger;
+pub mod metrics;
 pub mod money;
 pub mod mtls;
 pub mod telemetry;

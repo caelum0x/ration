@@ -54,9 +54,12 @@
 #   open http://localhost:16686  (Jaeger UI)
 #   open http://localhost:9090   (Prometheus)
 #
-# ledger-core (Rust) exports traces here but has no /metrics endpoint
-# yet — a real, precisely-scoped gap, not an oversight; see docs/SLO.md's
-# "ledger-core" section for the exact TODO.
+# ledger-core (Rust) exports traces here and now also exposes a
+# /metrics endpoint (services/ledger-core/src/metrics.rs) scoped to the
+# audit-mirror-failure counter docs/THREAT-MODEL.md's "Known gaps" #3
+# names; it is not a full port of the Go services' per-RPC request/
+# latency instrumentation yet — see docs/SLO.md's "ledger-core" section
+# for that still-open, separately-scoped TODO.
 #
 # mTLS between services (pkg/mtls, infra/dev-ca/) is OFF by default here
 # (every *_MTLS_ENABLED var below is unset/false, matching .env.example) —
@@ -75,8 +78,10 @@ services:
       - audit-log
     ports:
       - "7001:7001"
+      - "9099:9099"
     environment:
       LEDGER_CORE_ADDR: "0.0.0.0:7001"
+      LEDGER_CORE_METRICS_ADDR: "0.0.0.0:9099"
       RATION_LEDGER_WAL_PATH: "/data/ledger.wal"
       RATION_LEDGER_DB_PATH: "/data/ledger.db"
       RUST_LOG: "info"

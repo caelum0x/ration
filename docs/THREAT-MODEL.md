@@ -347,13 +347,18 @@ single source of truth.
    and audit-log's mirrored count.** `AuditMirror` is best-effort by
    design (never blocks `ApplyEntry`), which means a sustained
    audit-log outage silently drops mirroring with only a `tracing::warn!`
-   log line per failed call — nothing pages anyone or alerts on
-   "ledger-core's `ListEntries` count and audit-log's `ListRecords`
-   count have diverged by more than expected network-blip noise."
-   **Precise TODO**: a Prometheus counter (see `docs/SCALE-EXPANSION.md`
-   section 2) incremented on every `spawn_append` failure in
-   `services/ledger-core/src/audit_mirror.rs`, alerted on past a small
-   non-zero threshold.
+   log line per failed call. **Partially fixed**: `services/ledger-core/src/metrics.rs`
+   now exposes `ledger_core_audit_mirror_spawn_append_failures_total{kind}`
+   (a Prometheus counter, pre-registered at zero for every known `kind`
+   so an alert can distinguish "zero failures" from "metric absent"),
+   served on `GET /metrics` at `LEDGER_CORE_METRICS_ADDR` (default
+   `localhost:9099`) and incremented on every `spawn_append` failure.
+   **Remaining TODO**: no scrape config/alert rule wiring this counter
+   into Prometheus/Alertmanager yet, and no direct cross-check of
+   `ledger-core`'s `ListEntries` count against audit-log's
+   `ListRecords` count — the counter only catches failures on
+   ledger-core's side of the mirror, not divergence introduced on
+   audit-log's.
 4. ~~Public HTTP webhook listener has no rate limiting and no
    replay-window check.~~ **Fixed**: both are mitigated today (actor
    2's DoS and EoP rows above) — `internal/ratelimit`'s token-bucket

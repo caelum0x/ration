@@ -17,10 +17,13 @@
 //! own WAL remains the durable, authoritative record regardless of
 //! whether the mirror succeeds.
 
+use std::sync::Arc;
+
 use tonic::transport::{Channel, Endpoint};
 
 use crate::agent_decision::AgentDecisionRecord;
 use crate::ledger::LedgerEntryRecord;
+use crate::metrics::Metrics;
 use crate::mtls;
 use crate::pb::ration::audit::v1 as pb;
 use pb::audit_log_client::AuditLogClient;
@@ -48,6 +51,13 @@ const AUDIT_LOG_SERVER_NAME: &str = "audit-log";
 #[derive(Clone)]
 pub struct AuditMirror {
     client: Option<AuditLogClient<Channel>>,
+    /// Recorded into on every failed `spawn_append` call (see
+    /// `Metrics::record_audit_mirror_spawn_append_failure`,
+    /// `docs/THREAT-MODEL.md`'s "Known gaps" #3). Always present, even
+    /// on a [`disabled`](Self::disabled) mirror — `spawn_append` never
+    /// runs there, so it's simply never incremented, not a reason to
+    /// make this field optional too.
+    metrics: Arc<Metrics>,
 }
 
 impl AuditMirror {
@@ -56,8 +66,11 @@ impl AuditMirror {
     /// `AUDIT_LOG_ADDR` is unset, so ledger-core can run standalone
     /// (tests, a laptop demo without the full stack) without ever
     /// trying to dial an address nothing is listening on.
-    pub fn disabled() -> Self {
-        Self { client: None }
+    pub fn disabled(metrics: Arc<Metrics>) -> Self {
+        Self {
+            client: None,
+            metrics,
+        }
     }
 
     /// Builds a mirror dialing `addr` (a "host:port" string from
@@ -72,7 +85,11 @@ impl AuditMirror {
     /// first mirrored call is what actually dials; if that fails, the
     /// error is logged and dropped inside `spawn_append`, never
     /// surfaced here or to whatever RPC triggered the mirror.
-    pub fn connect(addr: &str, mtls_cfg: &mtls::Config) -> Result<Self, mtls::Error> {
+    pub fn connect(
+        addr: &str,
+        mtls_cfg: &mtls::Config,
+        metrics: Arc<Metrics>,
+    ) -> Result<Self, mtls::Error> {
         let scheme = mtls_cfg.dial_scheme();
         let mut endpoint = Endpoint::from_shared(format!("{scheme}://{addr}"))?;
         if let Some(tls) = mtls_cfg.client_tls_config(AUDIT_LOG_SERVER_NAME)? {
@@ -81,6 +98,7 @@ impl AuditMirror {
         let channel = endpoint.connect_lazy();
         Ok(Self {
             client: Some(AuditLogClient::new(channel)),
+            metrics,
         })
     }
 
@@ -162,6 +180,7 @@ impl AuditMirror {
         let Some(mut client) = self.client.clone() else {
             return;
         };
+        let metrics = Arc::clone(&self.metrics);
         tokio::spawn(async move {
             let req = pb::AppendRequest {
                 source_service: SOURCE_SERVICE.to_string(),
@@ -179,8 +198,22 @@ impl AuditMirror {
                     "audit_mirror: best-effort append to audit-log failed; \
                      ledger-core's own WAL remains the durable record"
                 );
+                metrics.record_audit_mirror_spawn_append_failure(metric_label(kind));
             }
         });
+    }
+}
+
+/// Maps a `SourceKind` to the label value
+/// `Metrics::record_audit_mirror_spawn_append_failure` uses — a short,
+/// lowercase, snake_case form rather than `kind.as_str_name()`'s raw
+/// proto enum name (`SOURCE_KIND_LEDGER_ENTRY`), matching Prometheus
+/// label-value convention elsewhere in this project.
+fn metric_label(kind: pb::SourceKind) -> &'static str {
+    match kind {
+        pb::SourceKind::LedgerEntry => "ledger_entry",
+        pb::SourceKind::AgentDecision => "agent_decision",
+        pb::SourceKind::Unspecified => "unspecified",
     }
 }
 
@@ -258,8 +291,12 @@ mod tests {
                 .unwrap();
         });
 
-        let mirror =
-            AuditMirror::connect(&addr.to_string(), &mtls::Config::default()).expect("connect");
+        let mirror = AuditMirror::connect(
+            &addr.to_string(),
+            &mtls::Config::default(),
+            Arc::new(Metrics::new()),
+        )
+        .expect("connect");
         (mirror, rx)
     }
 
@@ -334,8 +371,13 @@ mod tests {
         // caller — the whole point of "best-effort" is that this is
         // silently survivable.
         let unreachable_addr = "127.0.0.1:1"; // port 1 is never a gRPC server in CI/dev
-        let mirror = AuditMirror::connect(unreachable_addr, &mtls::Config::default())
-            .expect("connect (lazy — no I/O yet)");
+        let metrics = Arc::new(Metrics::new());
+        let mirror = AuditMirror::connect(
+            unreachable_addr,
+            &mtls::Config::default(),
+            Arc::clone(&metrics),
+        )
+        .expect("connect (lazy — no I/O yet)");
 
         let entry = LedgerEntryRecord {
             id: "entry-unreachable".to_string(),
@@ -353,6 +395,27 @@ mod tests {
         // Should return immediately; the actual failed dial happens in
         // the detached task and is only ever logged.
         mirror.mirror_ledger_entry("tenant-1", &entry);
+
+        // The failed dial happens asynchronously in the detached task
+        // spawn_append starts — poll briefly for the counter this
+        // test's whole point is verifying (docs/THREAT-MODEL.md's
+        // "Known gaps" #3) rather than racing a fixed sleep.
+        let incremented = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let rendered = metrics.render().expect("render should succeed");
+                if rendered.contains(
+                    "ledger_core_audit_mirror_spawn_append_failures_total{kind=\"ledger_entry\"} 1",
+                ) {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            incremented.is_ok(),
+            "expected the audit-mirror failure counter to increment after an unreachable dial"
+        );
     }
 
     #[tokio::test]
@@ -361,7 +424,7 @@ mod tests {
         // unset — no Channel, no Endpoint, nothing to dial. Both
         // mirror_* calls must still be safe to call unconditionally
         // from grpc.rs regardless of whether mirroring is configured.
-        let mirror = AuditMirror::disabled();
+        let mirror = AuditMirror::disabled(Arc::new(Metrics::new()));
 
         let entry = LedgerEntryRecord {
             id: "entry-disabled".to_string(),
