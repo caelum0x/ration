@@ -19,6 +19,7 @@ import (
 	"github.com/caelum0x/ration/pkg/metrics"
 	tenantregistrypb "github.com/caelum0x/ration/pkg/pb/tenantregistry"
 	"github.com/caelum0x/ration/pkg/telemetry"
+	"github.com/caelum0x/ration/services/tenant-registry/internal/authclient"
 	"github.com/caelum0x/ration/services/tenant-registry/internal/config"
 	"github.com/caelum0x/ration/services/tenant-registry/internal/grpcserver"
 	"github.com/caelum0x/ration/services/tenant-registry/internal/ledgerclient"
@@ -31,6 +32,12 @@ import (
 const (
 	serviceName    = "tenant-registry"
 	serviceVersion = "0.1.0"
+
+	// operatorCredentialTTL bounds how long tenant-registry's one
+	// minted operator JWT (see internal/authclient.MintOperatorJWT)
+	// stays valid, matching every other long-running service's
+	// identical choice.
+	operatorCredentialTTL = 20 * time.Hour
 )
 
 func main() {
@@ -63,7 +70,22 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	log.Info("config loaded", "ledger_core_addr", cfg.LedgerCoreAddr, "mtls_enabled", cfg.MTLS.Enabled)
+	log.Info("config loaded", "ledger_core_addr", cfg.LedgerCoreAddr, "auth_addr", cfg.AuthAddr, "mtls_enabled", cfg.MTLS.Enabled)
+
+	// Mint a single operator-scoped JWT from auth and attach it to
+	// every ledger-core call this process makes directly — see
+	// internal/authclient's doc comment for why: without it, every
+	// CreateTenant/GetTenant/ListTenants call starts failing the
+	// moment RATION_LEDGER_REQUIRE_TENANT_AUTH is enforced.
+	authClient, err := authclient.Dial(cfg.AuthAddr)
+	if err != nil {
+		return err
+	}
+	operatorToken, _, err := authClient.MintOperatorJWT(ctx, "ration-tenant-registry", operatorCredentialTTL)
+	authClient.Close()
+	if err != nil {
+		return err
+	}
 
 	ledgerMTLS := cfg.MTLS
 	if ledgerMTLS.ServerName == "" {
@@ -78,6 +100,8 @@ func run(log *slog.Logger) error {
 		telemetry.DialOption(),
 		grpc.WithChainUnaryInterceptor(telemetry.UnaryClientInterceptor()),
 		grpc.WithChainStreamInterceptor(telemetry.StreamClientInterceptor()),
+		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(operatorToken)),
+		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(operatorToken)),
 	)
 	if err != nil {
 		return err

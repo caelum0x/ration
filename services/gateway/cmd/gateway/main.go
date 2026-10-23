@@ -47,6 +47,14 @@ import (
 const (
 	serviceName    = "gateway"
 	serviceVersion = "0.1.0"
+
+	// operatorCredentialTTL bounds how long gateway's one minted
+	// operator JWT (see internal/authclient.MintOperatorJWT) stays
+	// valid before this process needs a fresh one. Gateway is a
+	// long-running server (like the TUI/agent, unlike the one-shot
+	// CLI), so this is deliberately close to jwtauth.MaxTTL (24h)
+	// rather than a short default.
+	operatorCredentialTTL = 20 * time.Hour
 )
 
 func main() {
@@ -93,6 +101,40 @@ func run(log *slog.Logger) error {
 		grpc.WithChainStreamInterceptor(telemetry.StreamClientInterceptor()),
 	}
 
+	// auth is dialed unconditionally (gRPC's dial is lazy, so this
+	// doesn't block startup even when cfg.RequireTenantAuth is false)
+	// so that flipping RATION_GATEWAY_REQUIRE_TENANT_AUTH on is a
+	// config change, not a redeploy. See internal/tenantauth's package
+	// doc for what this closes (docs/THREAT-MODEL.md's "Known gaps"
+	// item 1). Dialed and minted BEFORE ledger-core below: gateway is
+	// itself a direct ledger-core caller (SimulateDeposit,
+	// internal/grpcserver's ApplyEntry/GetBalance/etc) and needs its
+	// own operator-scoped credential to present to ledger-core's own
+	// tenantauth check (services/ledger-core/src/tenantauth.rs,
+	// docs/THREAT-MODEL.md item 1's "the biggest one" sub-gap) —
+	// without this, every one of those calls starts failing the moment
+	// RATION_LEDGER_REQUIRE_TENANT_AUTH is enforced.
+	authMTLS := cfg.MTLS
+	authMTLS.ServerName = "auth"
+	authDialCreds, err := authMTLS.DialOption()
+	if err != nil {
+		return err
+	}
+	auth, err := authclient.Dial(cfg.AuthAddr, append([]grpc.DialOption{authDialCreds}, clientDialOpts...)...)
+	if err != nil {
+		return err
+	}
+	defer auth.Close()
+
+	operatorToken, _, err := auth.MintOperatorJWT(ctx, "ration-gateway", operatorCredentialTTL)
+	if err != nil {
+		return err
+	}
+	ledgerCredentialDialOpts := []grpc.DialOption{
+		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(operatorToken)),
+		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(operatorToken)),
+	}
+
 	// ledger-core's identity cert (see infra/dev-ca/) doubles as its
 	// client cert, so gateway's own GATEWAY_MTLS_* identity is what's
 	// presented here; ServerName defaults to "ledger-core" (the name
@@ -106,7 +148,8 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	ledger, err := ledgerclient.Dial(cfg.LedgerCoreAddr, append([]grpc.DialOption{ledgerDialCreds}, clientDialOpts...)...)
+	ledgerDialOpts := append(append([]grpc.DialOption{ledgerDialCreds}, ledgerCredentialDialOpts...), clientDialOpts...)
+	ledger, err := ledgerclient.Dial(cfg.LedgerCoreAddr, ledgerDialOpts...)
 	if err != nil {
 		return err
 	}
@@ -135,24 +178,6 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	defer webhookEvents.Close()
-
-	// auth is dialed unconditionally (same pattern as the three clients
-	// above — gRPC's dial is lazy, so this doesn't block startup even
-	// when cfg.RequireTenantAuth is false) so that flipping
-	// RATION_GATEWAY_REQUIRE_TENANT_AUTH on is a config change, not a
-	// redeploy. See internal/tenantauth's package doc for what this
-	// closes (docs/THREAT-MODEL.md's "Known gaps" item 1).
-	authMTLS := cfg.MTLS
-	authMTLS.ServerName = "auth"
-	authDialCreds, err := authMTLS.DialOption()
-	if err != nil {
-		return err
-	}
-	auth, err := authclient.Dial(cfg.AuthAddr, append([]grpc.DialOption{authDialCreds}, clientDialOpts...)...)
-	if err != nil {
-		return err
-	}
-	defer auth.Close()
 
 	bus := activity.NewBus()
 

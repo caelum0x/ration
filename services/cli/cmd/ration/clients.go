@@ -29,16 +29,15 @@ type clients struct {
 // dialClients opens both gRPC connections. Callers must call close() when
 // done, typically via defer.
 //
-// Before dialing gateway, it mints a single operator-scoped JWT from
-// auth at authAddr (see internal/authclient.MintOperatorJWT) and attaches
-// it as an "authorization: Bearer <token>" credential on every
-// subsequent gateway RPC this connection makes — closing
+// It mints a single operator-scoped JWT from auth at authAddr (see
+// internal/authclient.MintOperatorJWT) and attaches it as an
+// "authorization: Bearer <token>" credential on every subsequent
+// gateway AND ledger-core RPC this connection makes — closing
 // docs/THREAT-MODEL.md's "Known gaps" item 1's own named residual TODO
-// for the CLI's half of it. ledger-core is NOT given this credential:
-// gateway's internal/tenantauth is what verifies it (see
-// RATION_GATEWAY_REQUIRE_TENANT_AUTH), ledger-core has no equivalent
-// check yet (see docs/THREAT-MODEL.md item 1's "the biggest one"
-// sub-gap, still open).
+// for the CLI's half of it, including "the biggest one" sub-gap:
+// ledger-core now verifies this same credential itself
+// (services/ledger-core/src/tenantauth.rs), rather than trusting
+// whatever already passed gateway's internal/tenantauth.
 func dialClients(ctx context.Context, ledgerAddr, gatewayAddr, authAddr string) (*clients, error) {
 	// Every RPC the CLI issues carries the one correlation ID main.go
 	// mints for the whole command invocation (see
@@ -63,37 +62,37 @@ func dialClients(ctx context.Context, ledgerAddr, gatewayAddr, authAddr string) 
 		return nil, fmt.Errorf("load mTLS config: %w", err)
 	}
 
-	ledgerDialOpt, err := mtlsCfg.WithDefaultServerName("ledger-core").DialOption()
-	if err != nil {
-		return nil, fmt.Errorf("mTLS dial option for ledger-core: %w", err)
-	}
-	ledgerConn, err := grpc.NewClient(ledgerAddr, append([]grpc.DialOption{ledgerDialOpt}, commonDialOpts...)...)
-	if err != nil {
-		return nil, fmt.Errorf("dial ledger-core at %s: %w", ledgerAddr, err)
-	}
-
 	auth, err := authclient.Dial(authAddr)
 	if err != nil {
-		_ = ledgerConn.Close()
 		return nil, fmt.Errorf("dial auth at %s: %w", authAddr, err)
 	}
 	defer auth.Close()
 	token, _, err := auth.MintOperatorJWT(ctx, "ration-cli", operatorCredentialTTL)
 	if err != nil {
-		_ = ledgerConn.Close()
 		return nil, fmt.Errorf("mint operator credential from auth at %s: %w", authAddr, err)
 	}
-	gatewayDialOpts := append([]grpc.DialOption{
+	credentialDialOpts := []grpc.DialOption{
 		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(token)),
 		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(token)),
-	}, commonDialOpts...)
+	}
+
+	ledgerDialOpt, err := mtlsCfg.WithDefaultServerName("ledger-core").DialOption()
+	if err != nil {
+		return nil, fmt.Errorf("mTLS dial option for ledger-core: %w", err)
+	}
+	ledgerDialOpts := append(append([]grpc.DialOption{ledgerDialOpt}, credentialDialOpts...), commonDialOpts...)
+	ledgerConn, err := grpc.NewClient(ledgerAddr, ledgerDialOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("dial ledger-core at %s: %w", ledgerAddr, err)
+	}
 
 	gatewayDialOpt, err := mtlsCfg.WithDefaultServerName("gateway").DialOption()
 	if err != nil {
 		_ = ledgerConn.Close()
 		return nil, fmt.Errorf("mTLS dial option for gateway: %w", err)
 	}
-	gatewayConn, err := grpc.NewClient(gatewayAddr, append([]grpc.DialOption{gatewayDialOpt}, gatewayDialOpts...)...)
+	gatewayDialOpts := append(append([]grpc.DialOption{gatewayDialOpt}, credentialDialOpts...), commonDialOpts...)
+	gatewayConn, err := grpc.NewClient(gatewayAddr, gatewayDialOpts...)
 	if err != nil {
 		_ = ledgerConn.Close()
 		return nil, fmt.Errorf("dial gateway at %s: %w", gatewayAddr, err)

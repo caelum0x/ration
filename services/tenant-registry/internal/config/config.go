@@ -14,8 +14,15 @@ import (
 // Config holds every environment-derived setting tenant-registry needs.
 type Config struct {
 	LedgerCoreAddr string
-	GRPCAddr       string
-	MetricsAddr    string
+	// AuthAddr is where tenant-registry mints its own operator-scoped
+	// credential at startup (see internal/authclient.MintOperatorJWT)
+	// to present on every direct ledger-core call (CreateTenant/
+	// GetTenant/ListTenants — operator-only RPCs on ledger-core's own
+	// side too, see services/ledger-core/src/tenantauth.rs) —
+	// docs/THREAT-MODEL.md item 1's "the biggest one" sub-gap.
+	AuthAddr    string
+	GRPCAddr    string
+	MetricsAddr string
 
 	// MTLS configures mutual TLS for tenant-registry's own gRPC server
 	// and for dialing ledger-core (see pkg/mtls, infra/dev-ca/).
@@ -27,6 +34,7 @@ type Config struct {
 func Load() (*Config, error) {
 	cfg := &Config{
 		LedgerCoreAddr: getenvDefault("LEDGER_CORE_ADDR", "localhost:7001"),
+		AuthAddr:       getenvDefault("AUTH_GRPC_ADDR", "localhost:7010"),
 		GRPCAddr:       getenvDefault("TENANT_REGISTRY_GRPC_ADDR", "localhost:7011"),
 		// Ports 7010-7013 are reserved for the section 1 split
 		// (auth=7010, tenant-registry=7011, card-issuance=7012,
@@ -43,6 +51,9 @@ func Load() (*Config, error) {
 
 	if cfg.LedgerCoreAddr == "" {
 		return nil, fmt.Errorf("config: LEDGER_CORE_ADDR must not be empty")
+	}
+	if cfg.AuthAddr == "" {
+		return nil, fmt.Errorf("config: AUTH_GRPC_ADDR must not be empty")
 	}
 	if cfg.GRPCAddr == "" {
 		return nil, fmt.Errorf("config: TENANT_REGISTRY_GRPC_ADDR must not be empty")

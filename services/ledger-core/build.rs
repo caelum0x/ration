@@ -49,22 +49,29 @@ fn main() {
         println!("cargo:rerun-if-changed={}", proto_file.display());
     }
 
-    // audit.proto is compiled in its own pass with client stubs on top
-    // of the usual server stubs: ledger-core is a *client* of AuditLog
-    // in production (see docs/SCALE-EXPANSION.md section 8,
-    // src/audit_mirror.rs) and never runs an AuditLog server, but
-    // src/audit_mirror.rs's own test suite stands up a fake AuditLog
-    // server (implementing the generated server trait) to exercise
-    // the client against — so both sides are generated here, unlike
-    // every other proto file below, which only ever needs server
-    // stubs for the service(s) ledger-core actually implements.
+    // audit.proto and auth.proto are compiled in their own pass with
+    // client stubs on top of the usual server stubs: ledger-core is a
+    // *client* of both AuditLog (docs/SCALE-EXPANSION.md section 8,
+    // src/audit_mirror.rs) and Auth (docs/THREAT-MODEL.md's "Known
+    // gaps" item 1's "the biggest one" sub-gap, src/authclient.rs —
+    // ledger-core verifies every tenant-scoped caller's own credential
+    // directly, rather than trusting whatever's already passed
+    // gateway's tenantauth) in production, and never runs either as a
+    // server, but each module's own test suite stands up a fake server
+    // (implementing the generated server trait) to exercise the client
+    // against — so both sides are generated here, unlike every other
+    // proto file below, which only ever needs server stubs for the
+    // service(s) ledger-core actually implements.
     let audit_proto = proto_dir.join("audit.proto");
-    let (audit_protos, server_only_protos): (Vec<PathBuf>, Vec<PathBuf>) =
-        proto_files.into_iter().partition(|p| p == &audit_proto);
+    let auth_proto = proto_dir.join("auth.proto");
+    let (client_protos, server_only_protos): (Vec<PathBuf>, Vec<PathBuf>) = proto_files
+        .into_iter()
+        .partition(|p| p == &audit_proto || p == &auth_proto);
     assert!(
-        !audit_protos.is_empty(),
-        "expected {} to exist alongside the other proto/*.proto files",
-        audit_proto.display()
+        client_protos.contains(&audit_proto) && client_protos.contains(&auth_proto),
+        "expected both {} and {} to exist alongside the other proto/*.proto files",
+        audit_proto.display(),
+        auth_proto.display()
     );
 
     tonic_build::configure()
@@ -76,6 +83,6 @@ fn main() {
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile_protos(&audit_protos, &[proto_dir])
-        .expect("failed to compile proto/audit.proto (client+server stubs) with tonic-build");
+        .compile_protos(&client_protos, &[proto_dir])
+        .expect("failed to compile proto/audit.proto and proto/auth.proto (client+server stubs) with tonic-build");
 }

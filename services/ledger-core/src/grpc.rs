@@ -14,6 +14,7 @@ use crate::money::Money;
 use crate::pb::ration::common::v1 as common_pb;
 use crate::pb::ration::ledger::v1 as pb;
 use crate::tenant::TenantRecord;
+use crate::tenantauth;
 
 pub struct LedgerCoreService {
     ledger: Arc<Ledger>,
@@ -22,11 +23,21 @@ pub struct LedgerCoreService {
     // section 8, crate::audit_mirror). Best-effort: never awaited
     // inline, never allowed to affect this service's own responses.
     audit: AuditMirror,
+    // Authorizes every tenant-scoped (or operator-only) RPC against
+    // the caller's own presented credential — see crate::tenantauth's
+    // module doc comment for exactly which gap this closes. Unlike
+    // `audit`, a failure here DOES fail the RPC: this is access
+    // control, not a best-effort mirror.
+    tenantauth: tenantauth::Config,
 }
 
 impl LedgerCoreService {
-    pub fn new(ledger: Arc<Ledger>, audit: AuditMirror) -> Self {
-        Self { ledger, audit }
+    pub fn new(ledger: Arc<Ledger>, audit: AuditMirror, tenantauth: tenantauth::Config) -> Self {
+        Self {
+            ledger,
+            audit,
+            tenantauth,
+        }
     }
 }
 
@@ -111,6 +122,7 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::CreateTenantRequest>,
     ) -> Result<Response<pb::Tenant>, Status> {
+        tenantauth::authorize_operator(&self.tenantauth, &request).await?;
         let req = request.into_inner();
         let ledger = self.ledger.clone();
         let tenant = tokio::task::spawn_blocking(move || {
@@ -125,6 +137,7 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::GetTenantRequest>,
     ) -> Result<Response<pb::Tenant>, Status> {
+        tenantauth::authorize_operator(&self.tenantauth, &request).await?;
         let req = request.into_inner();
         let ledger = self.ledger.clone();
         let tenant = tokio::task::spawn_blocking(move || ledger.get_tenant(&req.id))
@@ -137,6 +150,7 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::ListTenantsRequest>,
     ) -> Result<Response<pb::ListTenantsResponse>, Status> {
+        tenantauth::authorize_operator(&self.tenantauth, &request).await?;
         let req = request.into_inner();
         let ledger = self.ledger.clone();
         let (tenants, next_page_token) = tokio::task::spawn_blocking(move || {
@@ -154,6 +168,8 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::RecordDepositRequest>,
     ) -> Result<Response<pb::Deposit>, Status> {
+        tenantauth::authorize_tenant(&self.tenantauth, &request, &request.get_ref().tenant_id)
+            .await?;
         let req = request.into_inner();
         let amount = money_from_pb(req.expected_amount, "expected_amount")?;
         let ledger = self.ledger.clone();
@@ -174,6 +190,21 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::MarkDepositReceivedRequest>,
     ) -> Result<Response<pb::Deposit>, Status> {
+        // MarkDepositReceivedRequest carries only deposit_id, not
+        // tenant_id — resolve the deposit's owning tenant first (a
+        // read, mutates nothing) so authorize_tenant has something to
+        // check the caller's credential against before anything about
+        // the deposit changes.
+        let deposit_id_for_lookup = request.get_ref().deposit_id.clone();
+        let ledger_for_lookup = self.ledger.clone();
+        let owning_deposit = tokio::task::spawn_blocking(move || {
+            ledger_for_lookup.get_deposit(&deposit_id_for_lookup)
+        })
+        .await
+        .map_err(join_error)??;
+        tenantauth::authorize_tenant(&self.tenantauth, &request, &owning_deposit.tenant_id)
+            .await?;
+
         let req = request.into_inner();
         let ledger = self.ledger.clone();
         let (deposit, credit_entry, released_holds) = tokio::task::spawn_blocking(move || {
@@ -210,6 +241,8 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::ListDepositsRequest>,
     ) -> Result<Response<pb::ListDepositsResponse>, Status> {
+        tenantauth::authorize_tenant(&self.tenantauth, &request, &request.get_ref().tenant_id)
+            .await?;
         let req = request.into_inner();
         let ledger = self.ledger.clone();
         let deposits = tokio::task::spawn_blocking(move || ledger.list_deposits(&req.tenant_id))
@@ -224,6 +257,10 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::ListLateDepositsRequest>,
     ) -> Result<Response<pb::ListDepositsResponse>, Status> {
+        // Scans every tenant's outstanding deposits by nature — see
+        // tenantauth::authorize_operator's doc comment for why this is
+        // operator-only, not tenant-scoped.
+        tenantauth::authorize_operator(&self.tenantauth, &request).await?;
         let req = request.into_inner();
         let ledger = self.ledger.clone();
         let deposits =
@@ -239,6 +276,8 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::ApplyEntryRequest>,
     ) -> Result<Response<pb::ApplyEntryResponse>, Status> {
+        tenantauth::authorize_tenant(&self.tenantauth, &request, &request.get_ref().tenant_id)
+            .await?;
         let req = request.into_inner();
         let amount = money_from_pb(req.amount, "amount")?;
         let entry_type = LedgerEntryType::from_i32(req.r#type);
@@ -287,6 +326,8 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::GetBalanceRequest>,
     ) -> Result<Response<pb::Balance>, Status> {
+        tenantauth::authorize_tenant(&self.tenantauth, &request, &request.get_ref().tenant_id)
+            .await?;
         let req = request.into_inner();
         let tenant_id = req.tenant_id;
         let ledger = self.ledger.clone();
@@ -304,6 +345,8 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::ListEntriesRequest>,
     ) -> Result<Response<pb::ListEntriesResponse>, Status> {
+        tenantauth::authorize_tenant(&self.tenantauth, &request, &request.get_ref().tenant_id)
+            .await?;
         let req = request.into_inner();
         let ledger = self.ledger.clone();
         let (entries, next_page_token) = tokio::task::spawn_blocking(move || {
@@ -321,6 +364,8 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::CheckReserveFloorRequest>,
     ) -> Result<Response<pb::CheckReserveFloorResponse>, Status> {
+        tenantauth::authorize_tenant(&self.tenantauth, &request, &request.get_ref().tenant_id)
+            .await?;
         let req = request.into_inner();
         let ledger = self.ledger.clone();
         let (allowed, headroom) = tokio::task::spawn_blocking(move || {
@@ -338,6 +383,8 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::RecordAgentDecisionRequest>,
     ) -> Result<Response<pb::AgentDecision>, Status> {
+        tenantauth::authorize_tenant(&self.tenantauth, &request, &request.get_ref().tenant_id)
+            .await?;
         let req = request.into_inner();
         let action = AgentAction::from_i32(req.action);
         let ledger = self.ledger.clone();
@@ -362,6 +409,8 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         &self,
         request: Request<pb::ListAgentDecisionsRequest>,
     ) -> Result<Response<pb::ListAgentDecisionsResponse>, Status> {
+        tenantauth::authorize_tenant(&self.tenantauth, &request, &request.get_ref().tenant_id)
+            .await?;
         let req = request.into_inner();
         let ledger = self.ledger.clone();
         let decisions = tokio::task::spawn_blocking(move || {

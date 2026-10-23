@@ -23,6 +23,7 @@ import (
 	cardissuancepb "github.com/caelum0x/ration/pkg/pb/cardissuance"
 	"github.com/caelum0x/ration/pkg/telemetry"
 	"github.com/caelum0x/ration/services/card-issuance/internal/airwallex"
+	"github.com/caelum0x/ration/services/card-issuance/internal/authclient"
 	"github.com/caelum0x/ration/services/card-issuance/internal/bridge"
 	"github.com/caelum0x/ration/services/card-issuance/internal/cardsvc"
 	"github.com/caelum0x/ration/services/card-issuance/internal/config"
@@ -36,6 +37,13 @@ import (
 const (
 	serviceName    = "card-issuance"
 	serviceVersion = "0.1.0"
+
+	// operatorCredentialTTL bounds how long card-issuance's one minted
+	// operator JWT (see internal/authclient.MintOperatorJWT) stays
+	// valid. card-issuance is a long-running server, so this is
+	// deliberately close to jwtauth.MaxTTL (24h) rather than a short
+	// default, matching gateway/agent/tui's identical choice.
+	operatorCredentialTTL = 20 * time.Hour
 )
 
 func main() {
@@ -68,7 +76,23 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	log.Info("config loaded", "airwallex_mode", cfg.AirwallexMode, "ledger_core_addr", cfg.LedgerCoreAddr, "mtls_enabled", cfg.MTLS.Enabled)
+	log.Info("config loaded", "airwallex_mode", cfg.AirwallexMode, "ledger_core_addr", cfg.LedgerCoreAddr, "auth_addr", cfg.AuthAddr, "mtls_enabled", cfg.MTLS.Enabled)
+
+	// Mint a single operator-scoped JWT from auth and attach it to
+	// every ledger-core call this process makes directly — see
+	// internal/authclient's doc comment for why card-issuance needs
+	// this: without it, every ApplyEntry call (bridge-funding
+	// HOLD/RELEASE, card-limit DEBIT/RELEASE) starts failing the
+	// moment RATION_LEDGER_REQUIRE_TENANT_AUTH is enforced.
+	authClient, err := authclient.Dial(cfg.AuthAddr)
+	if err != nil {
+		return err
+	}
+	operatorToken, _, err := authClient.MintOperatorJWT(ctx, "ration-card-issuance", operatorCredentialTTL)
+	authClient.Close()
+	if err != nil {
+		return err
+	}
 
 	// ledger-core's identity cert (see infra/dev-ca/) doubles as its
 	// client cert, so card-issuance's own CARD_ISSUANCE_MTLS_* identity
@@ -88,6 +112,8 @@ func run(log *slog.Logger) error {
 		telemetry.DialOption(),
 		grpc.WithChainUnaryInterceptor(telemetry.UnaryClientInterceptor()),
 		grpc.WithChainStreamInterceptor(telemetry.StreamClientInterceptor()),
+		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(operatorToken)),
+		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(operatorToken)),
 	)
 	if err != nil {
 		return err

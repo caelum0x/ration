@@ -449,6 +449,18 @@ impl Ledger {
         ))
     }
 
+    /// Looks up a single deposit by id without mutating anything —
+    /// used by `crate::grpc`'s `mark_deposit_received` handler to learn
+    /// which tenant a deposit belongs to *before* authorizing the call
+    /// against that tenant_id (`MarkDepositReceivedRequest` itself only
+    /// carries `deposit_id`, not `tenant_id` — see
+    /// `crate::tenantauth::authorize_tenant`'s doc comment).
+    pub fn get_deposit(&self, deposit_id: &str) -> Result<DepositRecord, LedgerError> {
+        let inner = self.inner.lock().expect("ledger mutex poisoned");
+        deposit::get(&inner.db, deposit_id)?
+            .ok_or_else(|| LedgerError::DepositNotFound(deposit_id.to_string()))
+    }
+
     pub fn list_deposits(&self, tenant_id: &str) -> Result<Vec<DepositRecord>, LedgerError> {
         let inner = self.inner.lock().expect("ledger mutex poisoned");
         Ok(deposit::list_for_tenant(&inner.db, tenant_id)?)

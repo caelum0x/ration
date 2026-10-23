@@ -36,8 +36,15 @@ type Config struct {
 	AirwallexBaseURL  string
 
 	LedgerCoreAddr string
-	GRPCAddr       string
-	MetricsAddr    string
+	// AuthAddr is where card-issuance mints its own operator-scoped
+	// credential at startup (see internal/authclient.MintOperatorJWT)
+	// to present on every direct ledger-core call (ApplyEntry for
+	// bridge-funding HOLD/RELEASE and card-limit DEBIT/RELEASE) — see
+	// services/ledger-core/src/tenantauth.rs, docs/THREAT-MODEL.md
+	// item 1's "the biggest one" sub-gap.
+	AuthAddr    string
+	GRPCAddr    string
+	MetricsAddr string
 
 	BridgeMaxFraction        float64
 	BridgeMinGrantMinorUnits int64
@@ -58,6 +65,7 @@ func Load() (*Config, error) {
 		AirwallexBaseURL:  getenvDefault("AIRWALLEX_BASE_URL", "https://api-demo.airwallex.com"),
 
 		LedgerCoreAddr: getenvDefault("LEDGER_CORE_ADDR", "localhost:7001"),
+		AuthAddr:       getenvDefault("AUTH_GRPC_ADDR", "localhost:7010"),
 		// Ports 7010-7013 are reserved for the section 1 split
 		// (auth=7010, tenant-registry=7011, card-issuance=7012,
 		// webhook-ingestion=7013), distinct from ledger-core (7001),
@@ -125,6 +133,9 @@ func (c *Config) validate() error {
 	}
 	if c.LedgerCoreAddr == "" {
 		return fmt.Errorf("config: LEDGER_CORE_ADDR must not be empty")
+	}
+	if c.AuthAddr == "" {
+		return fmt.Errorf("config: AUTH_GRPC_ADDR must not be empty")
 	}
 	if c.GRPCAddr == "" {
 		return fmt.Errorf("config: CARD_ISSUANCE_GRPC_ADDR must not be empty")

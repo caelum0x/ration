@@ -19,9 +19,16 @@ type Config struct {
 	AirwallexWebhookSecret string
 
 	LedgerCoreAddr string
-	GRPCAddr       string
-	HTTPAddr       string
-	MetricsAddr    string
+	// AuthAddr is where webhook-ingestion mints its own operator-scoped
+	// credential at startup (see internal/authclient.MintOperatorJWT)
+	// to present on every direct ledger-core call (ListDeposits,
+	// MarkDepositReceived — see internal/webhookhandler) — see
+	// services/ledger-core/src/tenantauth.rs, docs/THREAT-MODEL.md
+	// item 1's "the biggest one" sub-gap.
+	AuthAddr    string
+	GRPCAddr    string
+	HTTPAddr    string
+	MetricsAddr string
 
 	// MTLS configures mutual TLS for webhook-ingestion's own gRPC server
 	// and for dialing ledger-core (see pkg/mtls, infra/dev-ca/). Disabled
@@ -48,6 +55,7 @@ func Load() (*Config, error) {
 		AirwallexWebhookSecret: os.Getenv("AIRWALLEX_WEBHOOK_SECRET"),
 
 		LedgerCoreAddr: getenvDefault("LEDGER_CORE_ADDR", "localhost:7001"),
+		AuthAddr:       getenvDefault("AUTH_GRPC_ADDR", "localhost:7010"),
 		// Ports 7010-7013 are reserved for the section 1 split
 		// (auth=7010, tenant-registry=7011, card-issuance=7012,
 		// webhook-ingestion=7013), distinct from ledger-core (7001),
@@ -94,6 +102,9 @@ func (c *Config) validate() error {
 	// reason to refuse to start the whole process.
 	if c.LedgerCoreAddr == "" {
 		return fmt.Errorf("config: LEDGER_CORE_ADDR must not be empty")
+	}
+	if c.AuthAddr == "" {
+		return fmt.Errorf("config: AUTH_GRPC_ADDR must not be empty")
 	}
 	if c.GRPCAddr == "" {
 		return fmt.Errorf("config: WEBHOOK_INGESTION_GRPC_ADDR must not be empty")

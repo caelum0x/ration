@@ -3,12 +3,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ledger_core::audit_mirror::AuditMirror;
+use ledger_core::authclient::AuthVerifier;
 use ledger_core::grpc::LedgerCoreService;
 use ledger_core::ledger::Ledger;
 use ledger_core::metrics::Metrics;
 use ledger_core::mtls;
 use ledger_core::pb::ration::ledger::v1::ledger_core_server::LedgerCoreServer;
 use ledger_core::telemetry::TracedService;
+use ledger_core::tenantauth;
 
 /// Tags every span, trace resource attribute, and log line this process
 /// emits — mirrors the Go services' `serviceName`/`serviceVersion`
@@ -18,6 +20,24 @@ const SERVICE_VERSION: &str = "0.1.0";
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Parses an env var as a bool ("true"/"false", case-insensitive),
+/// falling back to `default` when unset. Mirrors
+/// `services/gateway/internal/config`'s `getenvBoolDefault` exactly —
+/// same accepted values, same default-on-unset behavior — so
+/// `.env.example`'s documented values work identically on both sides
+/// of `RATION_LEDGER_REQUIRE_TENANT_AUTH`/
+/// `RATION_GATEWAY_REQUIRE_TENANT_AUTH`.
+fn env_bool_or(key: &str, default: bool) -> Result<bool, Box<dyn std::error::Error>> {
+    match std::env::var(key) {
+        Err(_) => Ok(default),
+        Ok(v) => match v.to_lowercase().as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            other => Err(format!("{key} must be \"true\" or \"false\", got {other:?}").into()),
+        },
+    }
 }
 
 /// Turns a configured "host:port" string (e.g. "localhost:7001", the
@@ -113,7 +133,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AuditMirror::connect(&audit_log_addr, &mtls_cfg, Arc::clone(&metrics))?
     };
 
-    let service = LedgerCoreService::new(Arc::new(ledger), audit_mirror);
+    // Tenant-scoped authorization directly on LedgerCore's own gRPC
+    // surface (docs/THREAT-MODEL.md's "Known gaps" item 1's "the
+    // biggest one" sub-gap, ledger_core::tenantauth): defaults to
+    // true, the same posture services/gateway's own
+    // RATION_GATEWAY_REQUIRE_TENANT_AUTH now defaults to. AUTH_GRPC_ADDR
+    // is the same env var every Go service already dials auth at (see
+    // .env.example).
+    let auth_grpc_addr = env_or("AUTH_GRPC_ADDR", "localhost:7010");
+    let require_tenant_auth = env_bool_or("RATION_LEDGER_REQUIRE_TENANT_AUTH", true)?;
+    let auth_verifier = if auth_grpc_addr.is_empty() {
+        AuthVerifier::disabled()
+    } else {
+        AuthVerifier::connect(&auth_grpc_addr, &mtls_cfg)?
+    };
+    if require_tenant_auth && !auth_verifier.is_configured() {
+        // Fail closed, loudly, at startup — never silently start up
+        // with every tenant-scoped RPC unauthenticated-but-accepted
+        // because AUTH_GRPC_ADDR was blank. Set
+        // RATION_LEDGER_REQUIRE_TENANT_AUTH=false explicitly for a
+        // deployment that genuinely wants ledger-core to run standalone
+        // with no Auth to check against.
+        return Err(
+            "RATION_LEDGER_REQUIRE_TENANT_AUTH=true but AUTH_GRPC_ADDR is unset; \
+             set AUTH_GRPC_ADDR or explicitly set RATION_LEDGER_REQUIRE_TENANT_AUTH=false"
+                .into(),
+        );
+    }
+    tracing::info!(
+        %auth_grpc_addr,
+        require_tenant_auth,
+        "ledger-core tenant authorization configured"
+    );
+    let tenantauth_cfg = tenantauth::Config {
+        verifier: auth_verifier,
+        required: require_tenant_auth,
+    };
+
+    let service = LedgerCoreService::new(Arc::new(ledger), audit_mirror, tenantauth_cfg);
 
     let mut server_builder = tonic::transport::Server::builder();
     if let Some(tls) = mtls_cfg.server_tls_config()? {

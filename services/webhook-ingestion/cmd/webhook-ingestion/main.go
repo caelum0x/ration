@@ -27,6 +27,7 @@ import (
 	"github.com/caelum0x/ration/pkg/metrics"
 	webhookingestionpb "github.com/caelum0x/ration/pkg/pb/webhookingestion"
 	"github.com/caelum0x/ration/pkg/telemetry"
+	"github.com/caelum0x/ration/services/webhook-ingestion/internal/authclient"
 	"github.com/caelum0x/ration/services/webhook-ingestion/internal/config"
 	"github.com/caelum0x/ration/services/webhook-ingestion/internal/eventbus"
 	"github.com/caelum0x/ration/services/webhook-ingestion/internal/grpcserver"
@@ -41,6 +42,14 @@ import (
 const (
 	serviceName    = "webhook-ingestion"
 	serviceVersion = "0.1.0"
+
+	// operatorCredentialTTL bounds how long webhook-ingestion's one
+	// minted operator JWT (see internal/authclient.MintOperatorJWT)
+	// stays valid. webhook-ingestion is a long-running server, so this
+	// is deliberately close to jwtauth.MaxTTL (24h) rather than a
+	// short default, matching gateway/agent/tui/card-issuance's
+	// identical choice.
+	operatorCredentialTTL = 20 * time.Hour
 )
 
 func main() {
@@ -73,8 +82,24 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	log.Info("config loaded", "ledger_core_addr", cfg.LedgerCoreAddr, "http_addr", cfg.HTTPAddr, "mtls_enabled", cfg.MTLS.Enabled,
+	log.Info("config loaded", "ledger_core_addr", cfg.LedgerCoreAddr, "auth_addr", cfg.AuthAddr, "http_addr", cfg.HTTPAddr, "mtls_enabled", cfg.MTLS.Enabled,
 		"webhook_secret_configured", cfg.AirwallexWebhookSecret != "")
+
+	// Mint a single operator-scoped JWT from auth and attach it to
+	// every ledger-core call this process makes directly — see
+	// internal/authclient's doc comment for why: without it, every
+	// ListDeposits/MarkDepositReceived call starts failing the moment
+	// RATION_LEDGER_REQUIRE_TENANT_AUTH is enforced, breaking webhook
+	// settlement entirely.
+	authClient, err := authclient.Dial(cfg.AuthAddr)
+	if err != nil {
+		return err
+	}
+	operatorToken, _, err := authClient.MintOperatorJWT(ctx, "ration-webhook-ingestion", operatorCredentialTTL)
+	authClient.Close()
+	if err != nil {
+		return err
+	}
 
 	ledgerMTLS := cfg.MTLS
 	if ledgerMTLS.ServerName == "" {
@@ -89,6 +114,8 @@ func run(log *slog.Logger) error {
 		telemetry.DialOption(),
 		grpc.WithChainUnaryInterceptor(telemetry.UnaryClientInterceptor()),
 		grpc.WithChainStreamInterceptor(telemetry.StreamClientInterceptor()),
+		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(operatorToken)),
+		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(operatorToken)),
 	)
 	if err != nil {
 		return err

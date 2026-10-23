@@ -2,12 +2,17 @@
 // generated pb.AuthClient, used by internal/tenantauth to verify a
 // caller-presented API key or JWT before a tenant-scoped RPC is allowed
 // to proceed (docs/THREAT-MODEL.md's "Known gaps" item 1 — "no
-// tenant-scoped authorization anywhere, still"). This package only
-// wraps the two read-only verification RPCs gateway needs at request
-// time; IssueAPIKey/RevokeAPIKey/MintJWT/IssueServiceCert are
-// operator/service-provisioning calls that don't belong on gateway's
-// hot path and are issued directly against auth by whoever is
-// provisioning a tenant's credentials.
+// tenant-scoped authorization anywhere, still"). Mostly this wraps the
+// two read-only verification RPCs gateway needs at request time;
+// IssueAPIKey/RevokeAPIKey/IssueServiceCert remain operator/service-
+// provisioning calls issued directly against auth by whoever is
+// provisioning a tenant's credentials. The one exception is
+// MintOperatorJWT below: gateway is itself a direct caller of
+// ledger-core (see cmd/gateway/main.go's SimulateDeposit path and
+// internal/grpcserver), so — exactly like services/cli/tui/agent — it
+// needs its own operator-scoped credential to present to ledger-core's
+// own tenantauth check (services/ledger-core/src/tenantauth.rs,
+// docs/THREAT-MODEL.md item 1's "the biggest one" sub-gap).
 package authclient
 
 import (
@@ -100,4 +105,29 @@ func (c *Client) VerifyJWT(ctx context.Context, token string) (tenantID string, 
 		return "", false, false, "", err
 	}
 	return resp.GetTenantId(), resp.GetValid(), resp.GetIsOperator(), resp.GetReason(), nil
+}
+
+// MintOperatorJWT mints a cross-tenant ("operator") JWT for subject, so
+// gateway can present it as an "authorization: Bearer <token>"
+// credential on every tenant-scoped ledger-core RPC it issues directly
+// (SimulateDeposit's RecordDeposit call, internal/grpcserver's
+// ApplyEntry/GetBalance/etc — all of which, by the time gateway makes
+// them, have already been authorized for the right tenant_id by this
+// process's own internal/tenantauth; gateway is a trusted forwarder,
+// not re-asserting a tenant-scoped identity of its own). See
+// services/cli/internal/authclient.MintOperatorJWT's doc comment for
+// why operator scope, not tenant scope, is correct here too.
+func (c *Client) MintOperatorJWT(ctx context.Context, subject string, ttl time.Duration) (token string, expiresAt time.Time, err error) {
+	ctx, cancel := c.withTimeout(ctx)
+	defer cancel()
+	resp, err := c.stub.MintJWT(ctx, &authpb.MintJWTRequest{
+		Subject:    subject,
+		TenantId:   "",
+		TtlSeconds: int64(ttl / time.Second),
+		IsOperator: true,
+	})
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("authclient: mint operator JWT: %w", err)
+	}
+	return resp.GetToken(), time.Unix(resp.GetExpiresAtUnix(), 0), nil
 }

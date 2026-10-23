@@ -8,6 +8,7 @@
 
 pub mod agent_decision;
 pub mod audit_mirror;
+pub mod authclient;
 pub mod deposit;
 pub mod error;
 pub mod ledger;
@@ -16,6 +17,7 @@ pub mod money;
 pub mod mtls;
 pub mod telemetry;
 pub mod tenant;
+pub mod tenantauth;
 pub mod wal_ffi;
 
 pub mod grpc;
@@ -40,12 +42,23 @@ pub mod pb {
                 tonic::include_proto!("ration.gateway.v1");
             }
         }
-        // audit.proto is compiled separately (client stubs only — see
-        // build.rs) from the rest of this family, but nests under the
-        // same `ration::<package>::v1` convention for consistency.
+        // audit.proto and auth.proto are compiled separately (client
+        // stubs too — see build.rs) from the rest of this family, but
+        // nest under the same `ration::<package>::v1` convention for
+        // consistency.
         pub mod audit {
             pub mod v1 {
                 tonic::include_proto!("ration.audit.v1");
+            }
+        }
+        // See src/authclient.rs: ledger-core dials Auth directly to
+        // verify every tenant-scoped caller's own credential
+        // (docs/THREAT-MODEL.md's "Known gaps" item 1's "the biggest
+        // one" sub-gap), the same way gateway's internal/tenantauth
+        // already does on the Go side.
+        pub mod auth {
+            pub mod v1 {
+                tonic::include_proto!("ration.auth.v1");
             }
         }
     }

@@ -114,22 +114,15 @@ func run(logger *slog.Logger) error {
 		grpc.WithChainStreamInterceptor(telemetry.StreamClientInterceptor()),
 	}
 
-	ledgerDialOpt, err := mtlsCfg.WithDefaultServerName("ledger-core").DialOption()
-	if err != nil {
-		return err
-	}
-	ledgerConn, err := grpc.NewClient(ledgerAddr, append([]grpc.DialOption{ledgerDialOpt}, commonDialOpts...)...)
-	if err != nil {
-		return err
-	}
-	defer ledgerConn.Close()
-
-	// Mint a single operator-scoped JWT from auth and attach it to every
-	// gateway RPC this process makes (see internal/authclient's doc
-	// comment for why the agent needs operator scope, not a tenant-
-	// scoped credential) — without this, RationBridgeFunding/IssueCard/
-	// AdjustCardLimit would start failing the moment
-	// RATION_GATEWAY_REQUIRE_TENANT_AUTH is enforced, breaking the
+	// Mint a single operator-scoped JWT from auth and attach it to
+	// every gateway AND ledger-core RPC this process makes (see
+	// internal/authclient's doc comment for why the agent needs
+	// operator scope, not a tenant-scoped credential) — without this,
+	// RationBridgeFunding/IssueCard/AdjustCardLimit would start failing
+	// the moment RATION_GATEWAY_REQUIRE_TENANT_AUTH is enforced, and
+	// every ledger-core call (ListLateDeposits, RecordAgentDecision,
+	// ...) would start failing the moment
+	// RATION_LEDGER_REQUIRE_TENANT_AUTH is enforced — breaking the
 	// agent's entire decision loop, not just hardening it.
 	authClient, err := authclient.Dial(authAddr)
 	if err != nil {
@@ -140,16 +133,28 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	credentialDialOpts := []grpc.DialOption{
+		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(operatorToken)),
+		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(operatorToken)),
+	}
+
+	ledgerDialOpt, err := mtlsCfg.WithDefaultServerName("ledger-core").DialOption()
+	if err != nil {
+		return err
+	}
+	ledgerDialOpts := append(append([]grpc.DialOption{ledgerDialOpt}, credentialDialOpts...), commonDialOpts...)
+	ledgerConn, err := grpc.NewClient(ledgerAddr, ledgerDialOpts...)
+	if err != nil {
+		return err
+	}
+	defer ledgerConn.Close()
 
 	gatewayDialOpt, err := mtlsCfg.WithDefaultServerName("gateway").DialOption()
 	if err != nil {
 		return err
 	}
-	gatewayDialOpts := append([]grpc.DialOption{
-		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(operatorToken)),
-		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(operatorToken)),
-	}, commonDialOpts...)
-	gatewayConn, err := grpc.NewClient(gatewayAddr, append([]grpc.DialOption{gatewayDialOpt}, gatewayDialOpts...)...)
+	gatewayDialOpts := append(append([]grpc.DialOption{gatewayDialOpt}, credentialDialOpts...), commonDialOpts...)
+	gatewayConn, err := grpc.NewClient(gatewayAddr, gatewayDialOpts...)
 	if err != nil {
 		return err
 	}

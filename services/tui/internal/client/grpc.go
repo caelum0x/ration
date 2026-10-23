@@ -43,12 +43,12 @@ type Clients struct {
 // Dial connects to the gateway and ledger-core gRPC servers at the given
 // addresses, minting a single operator-scoped JWT from auth at authAddr
 // first (see internal/authclient.MintOperatorJWT) and attaching it to
-// every subsequent gateway RPC — closing docs/THREAT-MODEL.md's "Known
-// gaps" item 1's own named residual TODO for the TUI's half of it.
-// ledger-core is NOT given this credential: gateway's internal/
-// tenantauth is what verifies it, ledger-core has no equivalent check
-// yet (docs/THREAT-MODEL.md item 1's "the biggest one" sub-gap, still
-// open).
+// every subsequent gateway AND ledger-core RPC — closing
+// docs/THREAT-MODEL.md's "Known gaps" item 1's own named residual TODO
+// for the TUI's half of it, including "the biggest one" sub-gap:
+// ledger-core now verifies this same credential itself
+// (services/ledger-core/src/tenantauth.rs), rather than trusting
+// whatever already passed gateway's internal/tenantauth.
 //
 // Plaintext by default (matching a local/demo deployment behind a
 // trusted network, consistent with the rest of this project's
@@ -102,7 +102,12 @@ func Dial(ctx context.Context, gatewayAddr, ledgerAddr, authAddr string) (*Clien
 		gwConn.Close()
 		return nil, fmt.Errorf("mTLS dial option for ledger-core: %w", err)
 	}
-	ledgerConn, err := grpc.NewClient(ledgerAddr, append([]grpc.DialOption{ledgerDialOpt}, commonDialOpts...)...)
+	ledgerDialOpts := append([]grpc.DialOption{
+		ledgerDialOpt,
+		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(token)),
+		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(token)),
+	}, commonDialOpts...)
+	ledgerConn, err := grpc.NewClient(ledgerAddr, ledgerDialOpts...)
 	if err != nil {
 		gwConn.Close()
 		return nil, fmt.Errorf("dial ledger-core at %s: %w", ledgerAddr, err)
