@@ -167,7 +167,16 @@ func run(logger *slog.Logger) error {
 	provider := llm.NewAnthropicProviderFromEnv()
 	policyCfg := policy.LoadConfigFromEnv()
 
-	runner := loop.NewRunner(ledgerClient, gatewayClient, provider, policyCfg, logger)
+	// Wrap the real provider in a circuit breaker (see internal/llm/
+	// breaker.go, docs/AGENT-DESIGN.md: "there is no confirmed... no
+	// circuit breaker: a slow/erroring LLM provider stalls that tick's
+	// decision loop") so a stuck Anthropic/Relay call can never block
+	// a tick beyond RATION_AGENT_LLM_BREAKER_COOLDOWN_SECONDS — once
+	// tripped, internal/loop.Runner executes the already-safe
+	// deterministic hard-rule envelope directly instead of waiting.
+	llmProvider := llm.NewCircuitBreakerFromEnv(provider, logger)
+
+	runner := loop.NewRunner(ledgerClient, gatewayClient, llmProvider, policyCfg, logger)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

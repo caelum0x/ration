@@ -8,6 +8,7 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -174,11 +175,64 @@ func (r *Runner) processLateDeposit(ctx context.Context, dep *ledger.Deposit, no
 		llm.NewHandler(toolCtx),
 	)
 	if err != nil {
+		if errors.Is(err, llm.ErrCircuitOpen) {
+			// A tripped breaker (services/agent/internal/llm/breaker.go)
+			// must never block or delay the decision the deterministic
+			// hard-rule envelope already made — see
+			// runFallbackDecision's doc comment. This is the intended,
+			// safe behavior, not a failure to report up as a tick
+			// error.
+			logger.Warn("llm circuit breaker open, executing hard-rule envelope directly", "decision", envelope.Decision)
+			r.runFallbackDecision(ctx, toolCtx, envelope, logger)
+			return nil
+		}
 		return fmt.Errorf("LLM conversation: %w", err)
 	}
 
 	logger.Info("decision cycle complete", "final_text", finalText)
 	return nil
+}
+
+// runFallbackDecision executes the already-computed, deterministic
+// hard-rule envelope directly — bypassing the LLM conversation
+// entirely — by calling the exact same tool handler
+// (llm.NewHandler(toolCtx)) the LLM itself would call, with a canned
+// reason/message instead of an LLM-authored one.
+//
+// This is what makes short-circuiting on llm.ErrCircuitOpen safe
+// rather than merely fast: per docs/AGENT-DESIGN.md's "LLM decides
+// phrasing only" guarantee, envelope.MaxGrantMinorUnits is already the
+// safe ceiling (policy.ComputeBridgeEnvelope, computed and recorded
+// via RecordAgentDecision before the LLM was ever consulted — see
+// above) — the LLM's only real job this tick was choosing how much of
+// that ceiling to execute and how to phrase it to the tenant. A tripped
+// breaker means that choice can't be made by the LLM right now, so
+// this executes the full ceiling deterministically instead of leaving
+// safe, already-decided money movement blocked on a stuck provider.
+// Every call here goes through the identical tool-handler code path
+// (and therefore the identical gateway/ledger-core re-validation and
+// RecordAgentDecision audit trail) a real LLM tool call would use.
+func (r *Runner) runFallbackDecision(ctx context.Context, toolCtx llm.ToolContext, envelope policy.Envelope, logger *slog.Logger) {
+	handler := llm.NewHandler(toolCtx)
+
+	if envelope.Decision != policy.DecisionDeclined && envelope.MaxGrantMinorUnits > 0 {
+		input, _ := json.Marshal(map[string]any{
+			"amount_minor_units": envelope.MaxGrantMinorUnits,
+			"reason":             "circuit breaker fallback: LLM provider unavailable, granting the full hard-rule envelope ceiling deterministically",
+		})
+		result, isErr := handler(ctx, llm.ToolRationBridgeFunding, input)
+		if isErr {
+			logger.Error("circuit breaker fallback: ration_bridge_funding call failed", "result", result)
+		} else {
+			logger.Info("circuit breaker fallback: ration_bridge_funding executed", "result", result)
+		}
+	}
+
+	message := fmt.Sprintf("Automated decision (LLM temporarily unavailable): %s — %s", envelope.Decision, envelope.Reason)
+	notifyInput, _ := json.Marshal(map[string]any{"message": message})
+	if result, isErr := handler(ctx, llm.ToolNotifyTenant, notifyInput); isErr {
+		logger.Error("circuit breaker fallback: notify_tenant call failed", "result", result)
+	}
 }
 
 // hasOpenGrantWithinWindow implements the velocity-cap data gathering
