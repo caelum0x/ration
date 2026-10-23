@@ -239,6 +239,22 @@ func (r *Runner) runFallbackDecision(ctx context.Context, toolCtx llm.ToolContex
 // described in docs/AGENT-DESIGN.md: a prior RATION_BRIDGE grant inside
 // the rolling window blocks a new grant unless its target deposit has
 // since been received.
+//
+// Only decisions that represent an ACTUALLY EXECUTED grant count —
+// see wasActuallyGranted's doc comment. This matters because
+// processLateDeposit (above) unconditionally records an envelope
+// pre-check decision, tagged RATION_BRIDGE whenever
+// envelope.Decision != Declined, BEFORE the LLM/tool call that would
+// actually move money is ever attempted. Without this filter, a
+// transient LLM failure on the very first tick against a brand-new
+// deposit (no execution ever happened, nothing to repay) would still
+// get treated as "an open unrepaid grant" by every later tick — fixed
+// 2026-10-23, confirmed live while verifying the circuit breaker
+// fallback (internal/llm/breaker.go): the fallback path explicitly
+// skips executing ration_bridge_funding when the recomputed envelope
+// is DecisionDeclined, so a deposit poisoned this way could never
+// actually receive the grant its own hard-rule envelope said was safe
+// — the exact failure mode a circuit breaker exists to prevent.
 func (r *Runner) hasOpenGrantWithinWindow(ctx context.Context, tenantID string, now time.Time) (bool, error) {
 	decisions, err := r.Ledger.ListAgentDecisions(ctx, tenantID, decisionHistoryLimit)
 	if err != nil {
@@ -254,6 +270,12 @@ func (r *Runner) hasOpenGrantWithinWindow(ctx context.Context, tenantID string, 
 			continue
 		}
 		if d.GetCreatedAtUnix() < windowStart {
+			continue
+		}
+		if !wasActuallyGranted(d.GetPolicySnapshotJson()) {
+			// A RATION_BRIDGE-tagged decision whose own snapshot was
+			// only ever the pre-check envelope (see this function's
+			// doc comment) — no money moved, nothing to be "open".
 			continue
 		}
 
@@ -283,6 +305,28 @@ func (r *Runner) hasOpenGrantWithinWindow(ctx context.Context, tenantID string, 
 	}
 
 	return false, nil
+}
+
+// wasActuallyGranted reports whether snapshotJSON is the kind
+// llm.ToolContext.handleRationBridgeFunding (services/agent/internal/
+// llm/tools.go) records on an actually-executed grant — which always
+// includes "granted_minor_units" — as opposed to the pre-check
+// envelope snapshot processLateDeposit itself records unconditionally
+// (which never includes that key; see its own snapshot construction
+// above). This is a real, load-bearing distinction, not a style
+// preference — see hasOpenGrantWithinWindow's doc comment for the bug
+// it fixes.
+func wasActuallyGranted(snapshotJSON string) bool {
+	if snapshotJSON == "" {
+		return false
+	}
+	var parsed struct {
+		GrantedMinorUnits *int64 `json:"granted_minor_units"`
+	}
+	if err := json.Unmarshal([]byte(snapshotJSON), &parsed); err != nil {
+		return false
+	}
+	return parsed.GrantedMinorUnits != nil
 }
 
 func depositIDFromSnapshot(snapshotJSON string) (string, bool) {

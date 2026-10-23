@@ -319,11 +319,18 @@ func TestRunner_Tick_VelocityCapBlocksSecondGrant(t *testing.T) {
 		headroom: 1_000_000,
 		decisions: []*ledger.AgentDecision{
 			{
-				Id:                 "decision-0",
-				TenantId:           "tenant-1",
-				Action:             common.AgentAction_AGENT_ACTION_RATION_BRIDGE,
-				CreatedAtUnix:      1950, // within the 24h window ending at now=2000
-				PolicySnapshotJson: `{"deposit_id":"dep-1"}`,
+				Id:            "decision-0",
+				TenantId:      "tenant-1",
+				Action:        common.AgentAction_AGENT_ACTION_RATION_BRIDGE,
+				CreatedAtUnix: 1950, // within the 24h window ending at now=2000
+				// granted_minor_units must be present for
+				// hasOpenGrantWithinWindow/wasActuallyGranted to treat
+				// this as an actually-executed grant, not just the
+				// unconditional pre-check envelope recording
+				// processLateDeposit itself makes before ever
+				// attempting the real tool call (which never includes
+				// this key) — see wasActuallyGranted's doc comment.
+				PolicySnapshotJson: `{"deposit_id":"dep-1","granted_minor_units":6000}`,
 			},
 		},
 		deposits: map[string][]*ledger.Deposit{
@@ -374,7 +381,7 @@ func TestRunner_Tick_VelocityCapAllowsGrantAfterRepayment(t *testing.T) {
 				TenantId:           "tenant-1",
 				Action:             common.AgentAction_AGENT_ACTION_RATION_BRIDGE,
 				CreatedAtUnix:      1950,
-				PolicySnapshotJson: `{"deposit_id":"dep-1"}`,
+				PolicySnapshotJson: `{"deposit_id":"dep-1","granted_minor_units":6000}`,
 			},
 		},
 		deposits: map[string][]*ledger.Deposit{
