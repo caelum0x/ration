@@ -30,7 +30,21 @@ import (
 // bridgeReferencePrefix tags every bridge-grant HOLD/RELEASE ledger entry
 // so the velocity check can find them again without a dedicated
 // "list bridge grants" RPC on ledger-core.
+//
+// Every HOLD's reference is "bridge:<deposit_id>:<hold_idempotency_key>"
+// — the deposit_id links the hold to the specific late deposit it is
+// standing in for, so ledger-core's mark_deposit_received_with_entry can
+// find and RELEASE it the instant that exact deposit clears (see
+// docs/AGENT-DESIGN.md rule 3: a bridge grant is unblocked "unless the
+// prior grant was fully repaid", which is now detectable by linkage, not
+// just by waiting out the velocity window).
 const bridgeReferencePrefix = "bridge:"
+
+// bridgeReference builds the "bridge:<deposit_id>:<hold_idempotency_key>"
+// reference tag for a HOLD entry backing depositID.
+func bridgeReference(depositID, holdIdempotencyKey string) string {
+	return fmt.Sprintf("%s%s:%s", bridgeReferencePrefix, depositID, holdIdempotencyKey)
+}
 
 // LedgerClient is the subset of ledgerclient.Client the bridge service
 // needs. Defining it here (rather than depending on the concrete type)
@@ -211,6 +225,11 @@ func (s *Service) RationBridgeFunding(ctx context.Context, tenantID string, requ
 	fullyGranted := granted == requestedMinorUnits
 	explanation := grantExplanation(snap, lateDeposit, fullyGranted, reason)
 
+	// granted >= s.policy.MinGrantMinorUnits > 0 at this point (the decline
+	// path above already returned), and granted is clamped to
+	// min(headroom, bridgeCap), so bridgeCap > 0, which only happens when
+	// lateDeposit != nil. lateDeposit.GetId() is therefore always safe to
+	// use as the settlement-linkage key for this hold's reference.
 	idempotencyKey := s.newID("bridge-hold")
 	entryResp, err := s.ledger.ApplyEntry(ctx, &ledgerpb.ApplyEntryRequest{
 		TenantId: tenantID,
@@ -219,7 +238,7 @@ func (s *Service) RationBridgeFunding(ctx context.Context, tenantID string, requ
 			MinorUnits: granted,
 			Currency:   tenant.GetCurrency(),
 		},
-		Reference:      bridgeReferencePrefix + idempotencyKey,
+		Reference:      bridgeReference(lateDeposit.GetId(), idempotencyKey),
 		IdempotencyKey: idempotencyKey,
 		Memo:           fmt.Sprintf("bridge funding: %s", reason),
 	})

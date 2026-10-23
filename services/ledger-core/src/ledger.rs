@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -91,11 +91,46 @@ enum WalEvent {
     /// deposit could be marked received without ever crediting the
     /// ledger (or vice versa), silently breaking the headroom math every
     /// other decision in this file depends on.
+    ///
+    /// `released_holds` carries any outstanding bridge-funding HOLD
+    /// entries (see `services/card-issuance/internal/bridge`) that were
+    /// tied to this specific deposit (reference `bridge:<deposit_id>:*`)
+    /// and are now settled by it, each paired with the RELEASE entry
+    /// that frees the held funds back to `available`. Per
+    /// docs/AGENT-DESIGN.md rule 3, a bridge grant's velocity-cap hold
+    /// must be released "once the prior grant was fully repaid" — i.e.
+    /// exactly when the deposit backing it is received, which is here,
+    /// atomically with the credit, so a crash between crediting the
+    /// deposit and releasing its hold can never leave the tenant's
+    /// velocity cap stuck "open" or the held funds stranded.
     DepositReceivedWithCredit {
         deposit_id: String,
         received_at_unix: i64,
         external_ref: String,
         entry: LedgerEntryRecord,
+        /// `#[serde(default)]` so a WAL written before this field
+        /// existed (every frame predating the bridge-hold-release fix)
+        /// still deserializes during recovery: those frames never had
+        /// anything to release, so an empty list is exactly correct for
+        /// them, not just a safe fallback.
+        #[serde(default)]
+        released_holds: Vec<LedgerEntryRecord>,
+        /// Tenant's `available_minor_units` immediately after the whole
+        /// frame (credit + every release), used to write the final
+        /// balance row. Individual entries' own
+        /// `balance_after_minor_units` still reflect the running total
+        /// immediately after themselves, for an accurate per-entry
+        /// audit trail.
+        ///
+        /// `Option` + `#[serde(default)]` for the same backward-
+        /// compatibility reason as `released_holds`: a pre-existing WAL
+        /// frame has no such field at all. `None` here (see
+        /// `apply_replayed_event`) falls back to `entry`'s own
+        /// `balance_after_minor_units` — which, before releases
+        /// existed, WAS the final available balance for the frame, so
+        /// this is a correct reconstruction, not a guess.
+        #[serde(default)]
+        available_after_minor_units: Option<i64>,
         held_after_minor_units: i64,
     },
     EntryApplied {
@@ -273,10 +308,10 @@ impl Ledger {
     /// without appending a new event or crediting the ledger again.
     ///
     /// Thin wrapper over `mark_deposit_received_with_entry` that drops
-    /// the credit entry it returns — kept as its own method (same
-    /// signature as before `with_entry` was added) so existing callers
-    /// and tests that only care about the `DepositRecord` don't need to
-    /// change.
+    /// the credit entry and any released bridge holds it returns — kept
+    /// as its own method (same signature as before `with_entry` was
+    /// added) so existing callers and tests that only care about the
+    /// `DepositRecord` don't need to change.
     pub fn mark_deposit_received(
         &self,
         deposit_id: String,
@@ -284,36 +319,46 @@ impl Ledger {
         external_ref: String,
     ) -> Result<DepositRecord, LedgerError> {
         self.mark_deposit_received_with_entry(deposit_id, received_at_unix, external_ref)
-            .map(|(deposit, _entry)| deposit)
+            .map(|(deposit, _entry, _released)| deposit)
     }
 
     /// Does the same work as `mark_deposit_received`, but also returns
     /// the `LedgerEntryRecord` the credit produced (`None` when the
-    /// deposit was already `Received` and nothing new was credited).
+    /// deposit was already `Received` and nothing new was credited) and
+    /// any bridge-funding HOLD entries this deposit just settled, each
+    /// paired with its RELEASE entry.
     ///
-    /// This exists so callers that need to mirror the credit elsewhere
-    /// — grpc.rs's `mark_deposit_received` RPC handler mirrors it into
-    /// audit-log, exactly like `apply_entry`'s handler already does for
-    /// its own entries (docs/SCALE-EXPANSION.md section 8) — can get at
-    /// the entry without re-deriving or re-querying for it. Before this
-    /// existed, the credit `mark_deposit_received` produces (the only
-    /// way a deposit's money becomes spendable headroom) was invisible
-    /// to the audit trail entirely, even though `apply_entry`'s credits
-    /// were mirrored — an inconsistency the "every money move is
-    /// mirrored" claim in README/docs/SUBMISSION.md didn't actually
-    /// hold for.
+    /// Settlement linkage: `services/card-issuance/internal/bridge`
+    /// tags every bridge HOLD's `reference` as `bridge:<deposit_id>:<id>`
+    /// — the deposit it is standing in for. When that exact deposit is
+    /// marked received, this method finds every still-outstanding
+    /// (unreleased) HOLD referencing it and emits a matching RELEASE for
+    /// each, in the SAME WAL frame as the credit, so `held_minor_units`
+    /// is freed back to `available` atomically with the deposit clearing
+    /// — closing the gap where bridge holds could only ever be released
+    /// by waiting out the velocity window, never by actual repayment
+    /// (docs/AGENT-DESIGN.md rule 3: "unless the prior grant was fully
+    /// repaid").
+    ///
+    /// This also exists so callers that need to mirror the credit and
+    /// releases elsewhere — grpc.rs's `mark_deposit_received` RPC
+    /// handler mirrors them into audit-log, exactly like `apply_entry`'s
+    /// handler already does for its own entries
+    /// (docs/SCALE-EXPANSION.md section 8) — can get at them without
+    /// re-deriving or re-querying.
     pub fn mark_deposit_received_with_entry(
         &self,
         deposit_id: String,
         received_at_unix: i64,
         external_ref: String,
-    ) -> Result<(DepositRecord, Option<LedgerEntryRecord>), LedgerError> {
+    ) -> Result<(DepositRecord, Option<LedgerEntryRecord>, Vec<LedgerEntryRecord>), LedgerError>
+    {
         let mut inner = self.inner.lock().expect("ledger mutex poisoned");
         let existing = deposit::get(&inner.db, &deposit_id)?
             .ok_or_else(|| LedgerError::DepositNotFound(deposit_id.clone()))?;
 
         if existing.status == DepositStatus::Received {
-            return Ok((existing, None));
+            return Ok((existing, None, Vec::new()));
         }
 
         let current_balance = read_balance(&inner.db, &existing.tenant_id)?;
@@ -335,20 +380,59 @@ impl Ledger {
             created_at_unix: now_unix(),
         };
 
+        // Release every outstanding bridge HOLD tied to this deposit, in
+        // the same atomic frame as the credit. See the doc comment above
+        // for why this must not be a separate, later operation.
+        let outstanding_holds =
+            list_outstanding_bridge_holds_for_deposit(&inner.db, &existing.tenant_id, &deposit_id)?;
+
+        let mut running_available = new_available;
+        let mut running_held = current_balance.held_minor_units;
+        let mut released_holds = Vec::with_capacity(outstanding_holds.len());
+        for hold in &outstanding_holds {
+            let amt = hold.amount_minor_units;
+            running_available = running_available
+                .checked_add(amt)
+                .ok_or(crate::money::MoneyError::Overflow)?;
+            running_held = running_held
+                .checked_sub(amt)
+                .ok_or(crate::money::MoneyError::Overflow)?;
+            released_holds.push(LedgerEntryRecord {
+                id: Uuid::new_v4().to_string(),
+                tenant_id: existing.tenant_id.clone(),
+                entry_type: LedgerEntryType::Release,
+                amount_minor_units: amt,
+                currency: hold.currency.clone(),
+                balance_after_minor_units: running_available,
+                reference: hold.reference.clone(),
+                memo: format!(
+                    "bridge hold released: backing deposit {deposit_id} received"
+                ),
+                idempotency_key: format!("bridge-release:{}", hold.id),
+                created_at_unix: now_unix(),
+            });
+        }
+
         let event = WalEvent::DepositReceivedWithCredit {
             deposit_id: deposit_id.clone(),
             received_at_unix,
             external_ref: external_ref.clone(),
             entry: entry.clone(),
-            held_after_minor_units: current_balance.held_minor_units,
+            released_holds: released_holds.clone(),
+            available_after_minor_units: Some(running_available),
+            held_after_minor_units: running_held,
         };
         let tenant_id = existing.tenant_id.clone();
-        let held_after = current_balance.held_minor_units;
+        let final_available = running_available;
+        let final_held = running_held;
         append_and_commit(&mut inner, &event, |db| {
             deposit::mark_received(db, &deposit_id, received_at_unix, &external_ref)?;
             let inserted = insert_ledger_entry_if_new(db, &entry)?;
+            for release in &released_holds {
+                insert_ledger_entry_if_new(db, release)?;
+            }
             if inserted {
-                write_balance(db, &tenant_id, entry.balance_after_minor_units, held_after)?;
+                write_balance(db, &tenant_id, final_available, final_held)?;
             }
             Ok(())
         })?;
@@ -361,6 +445,7 @@ impl Ledger {
                 ..existing
             },
             Some(entry),
+            released_holds,
         ))
     }
 
@@ -642,18 +727,35 @@ fn apply_replayed_event(db: &Connection, event: WalEvent) -> Result<(), LedgerEr
             received_at_unix,
             external_ref,
             entry,
+            released_holds,
+            available_after_minor_units,
             held_after_minor_units,
         } => {
             deposit::mark_received(&tx, &deposit_id, received_at_unix, &external_ref)?;
             // Same idempotent-on-replay pattern as EntryApplied: only
             // write the balance if this entry row wasn't already
-            // indexed.
+            // indexed. All rows in this frame (the credit plus every
+            // released hold) were inserted together in the same
+            // transaction the first time this frame was applied, so
+            // `inserted` for the credit entry is representative of the
+            // whole frame's insert state on replay.
+            // A pre-existing WAL frame (written before `released_holds`/
+            // `available_after_minor_units` existed) has no releases and
+            // no value for this field at all, so the credit entry's own
+            // `balance_after_minor_units` — which WAS the final
+            // available balance before this fix — is the correct
+            // reconstruction, not a guess. See the field's doc comment.
+            let available_after = available_after_minor_units.unwrap_or(entry.balance_after_minor_units);
+
             let inserted = insert_ledger_entry_if_new(&tx, &entry)?;
+            for release in &released_holds {
+                insert_ledger_entry_if_new(&tx, release)?;
+            }
             if inserted {
                 write_balance(
                     &tx,
                     &entry.tenant_id,
-                    entry.balance_after_minor_units,
+                    available_after,
                     held_after_minor_units,
                 )?;
             }
@@ -838,6 +940,57 @@ fn insert_ledger_entry_if_new(conn: &Connection, e: &LedgerEntryRecord) -> rusql
         ],
     )?;
     Ok(changed > 0)
+}
+
+/// Finds every HOLD entry for `tenant_id` whose `reference` ties it to
+/// `deposit_id` (the `bridge:<deposit_id>:<id>` convention set by
+/// `services/card-issuance/internal/bridge`) and that has no matching
+/// RELEASE entry yet (same `reference`, any RELEASE at all settles it —
+/// there is at most one HOLD per bridge grant and this method is the
+/// only producer of its RELEASE).
+///
+/// Ordered oldest-first so that, in the pathological case of more than
+/// one outstanding hold for the same deposit, releases are recorded (and
+/// their running `balance_after_minor_units` computed) in a stable,
+/// deterministic order.
+fn list_outstanding_bridge_holds_for_deposit(
+    conn: &Connection,
+    tenant_id: &str,
+    deposit_id: &str,
+) -> Result<Vec<LedgerEntryRecord>, LedgerError> {
+    let prefix = format!("bridge:{deposit_id}:");
+    let like_pattern = format!("{prefix}%");
+    let hold_type = LedgerEntryType::Hold.as_i32();
+    let mut stmt = conn.prepare(
+        "SELECT id, tenant_id, entry_type, amount_minor_units, currency, balance_after_minor_units,
+                reference, memo, idempotency_key, created_at_unix
+         FROM ledger_entries
+         WHERE tenant_id = ?1 AND entry_type = ?2 AND reference LIKE ?3
+         ORDER BY created_at_unix ASC, id ASC",
+    )?;
+    let holds: Vec<LedgerEntryRecord> = stmt
+        .query_map(
+            rusqlite::params![tenant_id, hold_type, like_pattern],
+            row_to_entry,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+
+    let release_type = LedgerEntryType::Release.as_i32();
+    let mut outstanding = Vec::with_capacity(holds.len());
+    for hold in holds {
+        let already_released: Option<i64> = conn
+            .query_row(
+                "SELECT 1 FROM ledger_entries WHERE tenant_id = ?1 AND entry_type = ?2 AND reference = ?3 LIMIT 1",
+                rusqlite::params![tenant_id, release_type, hold.reference],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if already_released.is_none() {
+            outstanding.push(hold);
+        }
+    }
+    Ok(outstanding)
 }
 
 fn find_entry_by_idempotency_key(

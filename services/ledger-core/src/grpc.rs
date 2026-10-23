@@ -176,7 +176,7 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
     ) -> Result<Response<pb::Deposit>, Status> {
         let req = request.into_inner();
         let ledger = self.ledger.clone();
-        let (deposit, credit_entry) = tokio::task::spawn_blocking(move || {
+        let (deposit, credit_entry, released_holds) = tokio::task::spawn_blocking(move || {
             ledger.mark_deposit_received_with_entry(
                 req.deposit_id,
                 req.received_at_unix,
@@ -191,8 +191,16 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         // never allowed to delay or fail this response. `credit_entry` is
         // `None` when the deposit was already `Received` (idempotent
         // retry) and nothing new was credited — nothing to mirror.
+        // `released_holds` are the bridge-funding HOLDs this deposit just
+        // settled (see ledger.rs's `mark_deposit_received_with_entry`
+        // doc comment) and must be mirrored too, or the audit trail
+        // would show money held forever while the live ledger correctly
+        // shows it released.
         if let Some(entry) = &credit_entry {
             self.audit.mirror_ledger_entry(&deposit.tenant_id, entry);
+        }
+        for release in &released_holds {
+            self.audit.mirror_ledger_entry(&deposit.tenant_id, release);
         }
 
         Ok(Response::new(to_pb_deposit(&deposit)))
