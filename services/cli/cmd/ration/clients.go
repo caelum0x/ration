@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/caelum0x/ration/pkg/mtls"
+	auditpb "github.com/caelum0x/ration/pkg/pb/audit"
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
 	"github.com/caelum0x/ration/pkg/telemetry"
@@ -12,18 +13,22 @@ import (
 	"google.golang.org/grpc"
 )
 
-// clients bundles the two gRPC connections the CLI needs. Tenant/balance/
+// clients bundles the gRPC connections the CLI needs. Tenant/balance/
 // agent-decision data lives in ledger-core (the authoritative store);
 // card and deposit-simulation operations are fronted by the gateway,
 // which is the only service allowed to talk to Airwallex and the only
 // service that re-validates money-moving requests before proxying to
-// ledger-core. See docs/ARCHITECTURE.md.
+// ledger-core; audit-log is the independent, append-only mirror
+// `audit-check` cross-checks ledger-core's own counts against. See
+// docs/ARCHITECTURE.md.
 type clients struct {
 	ledgerConn  *grpc.ClientConn
 	gatewayConn *grpc.ClientConn
+	auditConn   *grpc.ClientConn
 
 	Ledger  ledgerpb.LedgerCoreClient
 	Gateway gatewaypb.GatewayClient
+	Audit   auditpb.AuditLogClient
 }
 
 // dialClients opens both gRPC connections. Callers must call close() when
@@ -38,7 +43,7 @@ type clients struct {
 // ledger-core now verifies this same credential itself
 // (services/ledger-core/src/tenantauth.rs), rather than trusting
 // whatever already passed gateway's internal/tenantauth.
-func dialClients(ctx context.Context, ledgerAddr, gatewayAddr, authAddr string) (*clients, error) {
+func dialClients(ctx context.Context, ledgerAddr, gatewayAddr, authAddr, auditAddr string) (*clients, error) {
 	// Every RPC the CLI issues carries the one correlation ID main.go
 	// mints for the whole command invocation (see
 	// telemetry.ContextWithCorrelationID in main()) plus a trace span,
@@ -98,11 +103,34 @@ func dialClients(ctx context.Context, ledgerAddr, gatewayAddr, authAddr string) 
 		return nil, fmt.Errorf("dial gateway at %s: %w", gatewayAddr, err)
 	}
 
+	// audit-log has no tenant-scoped authorization of its own to
+	// present a credential against (it is a sink, not a source of
+	// truth for any one tenant's balance — see
+	// services/audit-log/internal/grpcserver, which binds
+	// source_service to the verified mTLS peer identity instead); the
+	// credential is attached anyway for forward-compatibility and
+	// consistency with every other dial in this function.
+	auditDialOpt, err := mtlsCfg.WithDefaultServerName("audit-log").DialOption()
+	if err != nil {
+		_ = ledgerConn.Close()
+		_ = gatewayConn.Close()
+		return nil, fmt.Errorf("mTLS dial option for audit-log: %w", err)
+	}
+	auditDialOpts := append(append([]grpc.DialOption{auditDialOpt}, credentialDialOpts...), commonDialOpts...)
+	auditConn, err := grpc.NewClient(auditAddr, auditDialOpts...)
+	if err != nil {
+		_ = ledgerConn.Close()
+		_ = gatewayConn.Close()
+		return nil, fmt.Errorf("dial audit-log at %s: %w", auditAddr, err)
+	}
+
 	return &clients{
 		ledgerConn:  ledgerConn,
 		gatewayConn: gatewayConn,
+		auditConn:   auditConn,
 		Ledger:      ledgerpb.NewLedgerCoreClient(ledgerConn),
 		Gateway:     gatewaypb.NewGatewayClient(gatewayConn),
+		Audit:       auditpb.NewAuditLogClient(auditConn),
 	}, nil
 }
 
@@ -112,4 +140,5 @@ func (c *clients) close() {
 	}
 	_ = c.ledgerConn.Close()
 	_ = c.gatewayConn.Close()
+	_ = c.auditConn.Close()
 }

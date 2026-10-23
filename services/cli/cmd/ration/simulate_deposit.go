@@ -57,7 +57,7 @@ Examples:
 }
 
 func runSimulateDeposit(cmd *cobra.Command, flags *globalFlags, tenantID string, amount int64, late bool, expectedIn, lateBy time.Duration) error {
-	c, err := dialClients(cmd.Context(), flags.ledgerAddr, flags.gatewayAddr, flags.authAddr)
+	c, err := dialClients(cmd.Context(), flags.ledgerAddr, flags.gatewayAddr, flags.authAddr, flags.auditAddr)
 	if err != nil {
 		return err
 	}

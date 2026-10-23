@@ -187,48 +187,35 @@ first; it names the exact cause:
    that doesn't copy the original HOLD's `reference`) will falsely keep
    a tenant velocity-blocked forever.
 3. **`"no late deposit on file for this tenant, nothing to bridge
-   against"`** despite the deposit genuinely being overdue — **this is a
-   confirmed, real mismatch between two different definitions of
-   "late," not a hypothetical.** `findRelevantLateDeposit`
-   (`services/card-issuance/internal/bridge/service.go`) filters strictly on
-   the deposit's stored `status` field: `if d.GetStatus() !=
-   DepositStatus_DEPOSIT_STATUS_LATE { continue }`. But `ledger-core`'s
-   `list_late` (`services/ledger-core/src/deposit.rs`) computes lateness
-   **without ever touching the `status` column** — its own doc comment
-   says so explicitly: "Computed from `received_at_unix`/
-   `expected_at_unix` directly rather than trusting the stored `status`
-   column, since a plain `ListLateDeposits` read should never have to
-   rely on some other call having already flipped the status to
-   `Late`." Nothing in `ledger-core`'s write path (`deposit::insert` sets
+   against"`** despite the deposit genuinely being overdue — **FIXED
+   2026-10-23.** `findRelevantLateDeposit`
+   (`services/card-issuance/internal/bridge/service.go`) used to filter
+   strictly on the deposit's stored `status` field
+   (`d.GetStatus() != DepositStatus_DEPOSIT_STATUS_LATE`), but nothing
+   on `ledger-core`'s write path (`deposit::insert` sets
    `DepositStatus::Expected`; `deposit::mark_received` only ever writes
-   `DepositStatus::Received`) ever writes `DepositStatus::Late` to a row
-   — `DepositStatus::Late`'s only appearance in `deposit.rs` is as an
-   `i32`-to-enum decode target (`from_i32`'s match arm `3 =>
-   DepositStatus::Late`), never as a value anything constructs and
-   inserts. `to_pb_deposit` (`services/ledger-core/src/grpc.rs`) maps
-   `d.status.as_i32()` verbatim onto the wire, so a deposit returned by
-   the real `ListLateDeposits`/`ListDeposits` RPC — genuinely late by
-   `list_late`'s own time-based definition — comes back over gRPC with
-   `status: DEPOSIT_STATUS_EXPECTED`, not `DEPOSIT_STATUS_LATE`.
-   **Net effect: against a real ledger-core, `findRelevantLateDeposit`
-   can never find a match, and bridge funding declines every genuinely
-   late deposit with this exact message.** This is masked in every unit
-   test that exercises this path (`bridge/service_test.go`,
-   `grpcserver/server_test.go`, `agent/internal/loop/runner_test.go`) —
-   they all hand-construct fake `Deposit{Status:
-   DEPOSIT_STATUS_LATE}` fixtures directly, which never goes through
-   `ledger-core`'s real `status` computation, so the test suite is green
-   while this path is broken end-to-end. **Fix is one of two choices,
-   not yet made:** either have `ledger-core`'s `list_late` (or
-   `to_pb_deposit`, computed per-row against "now") actually set
-   `status = Late` on the returned records (without necessarily
-   persisting that transition — a read-time projection is enough), or
-   change `findRelevantLateDeposit` to use the same time-based
-   `expected_at_unix < now && received_at_unix == 0` check ledger-core
-   itself uses instead of trusting `status`. Until one of those lands,
-   treat every "no late deposit on file" decline as suspect, not as
-   confirmation the deposit truly isn't late — cross-check with `expected_at_unix`
-   and `received_at_unix` on the raw `ListDeposits` response, not `status`.
+   `DepositStatus::Received` — see `services/ledger-core/src/
+   deposit.rs`) ever wrote `DepositStatus::Late` to a row, so that
+   filter could never match a single real deposit: `RationBridgeFunding`
+   declined every genuinely late deposit with exactly this message,
+   every time, against a real ledger-core. Masked by every unit test
+   that exercised this path (`bridge/service_test.go`,
+   `grpcserver/server_test.go`, `agent/internal/loop/runner_test.go`),
+   which all hand-constructed fake `Deposit{Status:
+   DEPOSIT_STATUS_LATE}` fixtures directly — fixtures that also
+   happened to satisfy the real, intended definition (past
+   `expected_at_unix`, zero `received_at_unix`), so the bug was
+   invisible to the green test suite.
+
+   `findRelevantLateDeposit` now computes lateness the same time-based
+   way `ledger-core`'s own `list_late` does —
+   `ReceivedAtUnix == 0 && ExpectedAtUnix < s.now()` — instead of
+   trusting the `status` field at all. No proto/wire change needed; the
+   existing test suite (including the fixtures above, which already
+   satisfied this definition) passes unchanged. If you still see this
+   decline for a deposit that is unambiguously overdue, check
+   `expected_at_unix`/`received_at_unix` on the raw `ListDeposits`
+   response directly — that is now exactly what this code checks too.
 4. **`"computed grant of $X is below the $5 minimum-useful-grant
    floor"`** — `granted < MinGrantMinorUnits` (default 500 = $5.00,
    `RATION_BRIDGE_MIN_GRANT_MINOR_UNITS`). The explanation string
@@ -255,3 +242,44 @@ metrics.go`, section 2's named metric) against `{result="granted"}` +
 across *every* tenant (not just one) points at a policy or config
 regression (e.g. `RATION_BRIDGE_MAX_FRACTION` accidentally set to `0`),
 not a per-tenant data issue.
+
+## "audit-log's mirror might be silently falling behind ledger-core"
+
+**Symptom:** no specific error — this is a *preventive* check, not a
+reactive one. `services/ledger-core/src/audit_mirror.rs`'s mirroring of
+every `ApplyEntry`/`RecordAgentDecision` outcome into `audit-log` is
+explicitly best-effort and asynchronous (never allowed to block or fail
+the original RPC); a network blip, `audit-log` being down, or a
+serialization bug there fails *silently* from the caller's perspective
+— `audit_mirror_spawn_append_failures_total` (`pkg/metrics`,
+docs/THREAT-MODEL.md's "Known gaps" #3) increments, but nothing
+compares that against what actually landed. `VerifyChain`/`verify-chain`
+(above) only proves the chain is internally consistent — it says
+nothing about whether every record that *should* be there actually
+*is*.
+
+**Check:** run `ration audit-check` (`services/cli/cmd/ration/
+audit_check.go`). For every tenant (or just `--tenant <id>`), it counts
+`ledger-core`'s own `ListEntries`/`ListAgentDecisions` records and
+`audit-log`'s own mirrored `ListRecords` count of each kind for that
+same tenant, fully paginated on both sides, and reports any tenant/kind
+pair whose counts diverge by more than `--tolerance` (default 2 — the
+two counts are two independent, non-atomic RPC round-trips, so a
+record landing on `ledger-core` between the two reads is expected
+noise, not a real gap). Exits 0 when everything matches; exits 1 and
+prints every divergent pair otherwise, so this is safe to run from a
+monitoring cron job, not just by hand:
+
+```
+ration audit-check                       # every tenant
+ration audit-check --tenant <tenant-id>   # one tenant
+ration audit-check --tolerance 0          # strict, no slack for in-flight writes
+```
+
+A real, sustained divergence (not a one-off blip that clears on the
+next run) means the mirror has a real, ongoing gap — check
+`audit_mirror_spawn_append_failures_total` first (a nonzero, growing
+counter directly explains it), then whether `AUDIT_LOG_ADDR` is even
+configured on the `ledger-core` instance in question (unset disables
+mirroring entirely, by design — see `AuditMirror::disabled`), then
+`audit-log`'s own process health/logs for the window the gap opened in.

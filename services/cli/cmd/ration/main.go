@@ -24,6 +24,7 @@ const (
 	defaultLedgerAddr  = "localhost:7001"
 	defaultGatewayAddr = "localhost:7002"
 	defaultAuthAddr    = "localhost:7010"
+	defaultAuditAddr   = "localhost:7003"
 	defaultRPCTimeout  = 10 * time.Second
 
 	// operatorCredentialTTL bounds how long the CLI's one minted
@@ -40,6 +41,7 @@ type globalFlags struct {
 	ledgerAddr  string
 	gatewayAddr string
 	authAddr    string
+	auditAddr   string
 	timeout     time.Duration
 }
 
@@ -73,6 +75,9 @@ the resulting agent decisions — all live, from the terminal.`,
 	root.PersistentFlags().StringVar(&flags.authAddr, "auth-addr",
 		envOrDefault("AUTH_GRPC_ADDR", defaultAuthAddr),
 		"auth gRPC address, used to mint this invocation's operator credential (env AUTH_GRPC_ADDR)")
+	root.PersistentFlags().StringVar(&flags.auditAddr, "audit-addr",
+		envOrDefault("AUDIT_LOG_GRPC_ADDR", defaultAuditAddr),
+		"audit-log gRPC address, used by audit-check (env AUDIT_LOG_GRPC_ADDR)")
 	root.PersistentFlags().DurationVar(&flags.timeout, "timeout", defaultRPCTimeout,
 		"per-RPC timeout")
 
@@ -80,6 +85,7 @@ the resulting agent decisions — all live, from the terminal.`,
 		newSeedCmd(flags),
 		newSimulateDepositCmd(flags),
 		newStatusCmd(flags),
+		newAuditCheckCmd(flags),
 	)
 
 	return root
