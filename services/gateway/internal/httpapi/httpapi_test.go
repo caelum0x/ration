@@ -24,13 +24,14 @@ import (
 // exactly what sdk/go/ration's and internal/cardissuanceclient's own
 // bufconn-based tests already prove for their respective layers).
 type fakeGatewayClient struct {
-	cards            map[string]*gatewaypb.Card
-	nextCardID       int
-	events           []*gatewaypb.ActivityEvent
-	rationBridgeErr  error
-	getCardErr       error
-	issueCardErr     error
-	simulateDeposits int
+	cards             map[string]*gatewaypb.Card
+	nextCardID        int
+	events            []*gatewaypb.ActivityEvent
+	rationBridgeErr   error
+	getCardErr        error
+	issueCardErr      error
+	simulateDeposits  int
+	dashboardSnapshot *gatewaypb.GetDashboardSnapshotResponse
 
 	// capturedCtx records the context the most recent call was made
 	// with, so tests can assert on forwarded outgoing gRPC metadata
@@ -130,6 +131,14 @@ func (f *fakeGatewayClient) StreamActivity(ctx context.Context, in *gatewaypb.St
 		matched = append(matched, e)
 	}
 	return &fakeStream{events: matched}, nil
+}
+
+func (f *fakeGatewayClient) GetDashboardSnapshot(ctx context.Context, in *gatewaypb.GetDashboardSnapshotRequest, opts ...grpc.CallOption) (*gatewaypb.GetDashboardSnapshotResponse, error) {
+	f.capturedCtx = ctx
+	if f.dashboardSnapshot != nil {
+		return f.dashboardSnapshot, nil
+	}
+	return &gatewaypb.GetDashboardSnapshotResponse{}, nil
 }
 
 func TestHandleIssueCard(t *testing.T) {

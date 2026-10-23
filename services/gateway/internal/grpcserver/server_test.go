@@ -16,7 +16,11 @@ import (
 // fakeLedger implements the narrow LedgerClient interface SimulateDeposit
 // needs, with no gRPC and no network.
 type fakeLedger struct {
-	tenant *ledgerpb.Tenant
+	tenant             *ledgerpb.Tenant
+	tenants            []*ledgerpb.Tenant
+	balance            *ledgerpb.Balance
+	headroomMinorUnits int64
+	decisions          []*ledgerpb.AgentDecision
 
 	recordedDeposits []*ledgerpb.RecordDepositRequest
 }
@@ -33,6 +37,26 @@ func (f *fakeLedger) RecordDeposit(ctx context.Context, req *ledgerpb.RecordDepo
 		ExpectedAtUnix: req.GetExpectedAtUnix(),
 		ExternalRef:    req.GetExternalRef(),
 	}, nil
+}
+
+// ListTenants/GetBalance/CheckReserveFloor/ListAgentDecisions back
+// GetDashboardSnapshot only (see server.go's LedgerClient doc comment)
+// — no existing test in this file exercises that RPC, so these are
+// minimal stand-ins, not full fakes with per-test configurability.
+func (f *fakeLedger) ListTenants(ctx context.Context, req *ledgerpb.ListTenantsRequest) (*ledgerpb.ListTenantsResponse, error) {
+	return &ledgerpb.ListTenantsResponse{Tenants: f.tenants}, nil
+}
+func (f *fakeLedger) GetBalance(ctx context.Context, tenantID string) (*ledgerpb.Balance, error) {
+	if f.balance != nil {
+		return f.balance, nil
+	}
+	return &ledgerpb.Balance{TenantId: tenantID}, nil
+}
+func (f *fakeLedger) CheckReserveFloor(ctx context.Context, tenantID string, proposedDebitMinorUnits int64) (*ledgerpb.CheckReserveFloorResponse, error) {
+	return &ledgerpb.CheckReserveFloorResponse{Allowed: true, HeadroomMinorUnits: f.headroomMinorUnits}, nil
+}
+func (f *fakeLedger) ListAgentDecisions(ctx context.Context, tenantID string, limit int32) ([]*ledgerpb.AgentDecision, error) {
+	return f.decisions, nil
 }
 
 // fakeCardIssuance implements the narrow CardIssuanceClient interface

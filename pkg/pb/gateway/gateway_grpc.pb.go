@@ -19,13 +19,14 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Gateway_IssueCard_FullMethodName           = "/ration.gateway.v1.Gateway/IssueCard"
-	Gateway_AdjustCardLimit_FullMethodName     = "/ration.gateway.v1.Gateway/AdjustCardLimit"
-	Gateway_GetCard_FullMethodName             = "/ration.gateway.v1.Gateway/GetCard"
-	Gateway_ListCards_FullMethodName           = "/ration.gateway.v1.Gateway/ListCards"
-	Gateway_RationBridgeFunding_FullMethodName = "/ration.gateway.v1.Gateway/RationBridgeFunding"
-	Gateway_SimulateDeposit_FullMethodName     = "/ration.gateway.v1.Gateway/SimulateDeposit"
-	Gateway_StreamActivity_FullMethodName      = "/ration.gateway.v1.Gateway/StreamActivity"
+	Gateway_IssueCard_FullMethodName            = "/ration.gateway.v1.Gateway/IssueCard"
+	Gateway_AdjustCardLimit_FullMethodName      = "/ration.gateway.v1.Gateway/AdjustCardLimit"
+	Gateway_GetCard_FullMethodName              = "/ration.gateway.v1.Gateway/GetCard"
+	Gateway_ListCards_FullMethodName            = "/ration.gateway.v1.Gateway/ListCards"
+	Gateway_RationBridgeFunding_FullMethodName  = "/ration.gateway.v1.Gateway/RationBridgeFunding"
+	Gateway_SimulateDeposit_FullMethodName      = "/ration.gateway.v1.Gateway/SimulateDeposit"
+	Gateway_StreamActivity_FullMethodName       = "/ration.gateway.v1.Gateway/StreamActivity"
+	Gateway_GetDashboardSnapshot_FullMethodName = "/ration.gateway.v1.Gateway/GetDashboardSnapshot"
 )
 
 // GatewayClient is the client API for Gateway service.
@@ -45,6 +46,18 @@ type GatewayClient interface {
 	RationBridgeFunding(ctx context.Context, in *RationBridgeFundingRequest, opts ...grpc.CallOption) (*RationBridgeFundingResponse, error)
 	SimulateDeposit(ctx context.Context, in *SimulateDepositRequest, opts ...grpc.CallOption) (*SimulateDepositResponse, error)
 	StreamActivity(ctx context.Context, in *StreamActivityRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ActivityEvent], error)
+	// GetDashboardSnapshot is the one aggregate read the judge-facing web
+	// dashboard (services/gateway/internal/httpapi's "/v1/dashboard"
+	// routes) polls: every tenant's reserve-floor headroom in one round
+	// trip, plus the most recent agent decisions (rationale and
+	// policy_snapshot_json included) across every tenant, newest first.
+	// Nothing here is new business logic — it's the same ListTenants/
+	// GetBalance/CheckReserveFloor/ListAgentDecisions data
+	// services/tui/internal/client already fetches per-tenant over
+	// separate gRPC calls, aggregated server-side into one response so a
+	// browser polling this endpoint doesn't need N+1 round trips per
+	// refresh.
+	GetDashboardSnapshot(ctx context.Context, in *GetDashboardSnapshotRequest, opts ...grpc.CallOption) (*GetDashboardSnapshotResponse, error)
 }
 
 type gatewayClient struct {
@@ -134,6 +147,16 @@ func (c *gatewayClient) StreamActivity(ctx context.Context, in *StreamActivityRe
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Gateway_StreamActivityClient = grpc.ServerStreamingClient[ActivityEvent]
 
+func (c *gatewayClient) GetDashboardSnapshot(ctx context.Context, in *GetDashboardSnapshotRequest, opts ...grpc.CallOption) (*GetDashboardSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDashboardSnapshotResponse)
+	err := c.cc.Invoke(ctx, Gateway_GetDashboardSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GatewayServer is the server API for Gateway service.
 // All implementations must embed UnimplementedGatewayServer
 // for forward compatibility.
@@ -151,6 +174,18 @@ type GatewayServer interface {
 	RationBridgeFunding(context.Context, *RationBridgeFundingRequest) (*RationBridgeFundingResponse, error)
 	SimulateDeposit(context.Context, *SimulateDepositRequest) (*SimulateDepositResponse, error)
 	StreamActivity(*StreamActivityRequest, grpc.ServerStreamingServer[ActivityEvent]) error
+	// GetDashboardSnapshot is the one aggregate read the judge-facing web
+	// dashboard (services/gateway/internal/httpapi's "/v1/dashboard"
+	// routes) polls: every tenant's reserve-floor headroom in one round
+	// trip, plus the most recent agent decisions (rationale and
+	// policy_snapshot_json included) across every tenant, newest first.
+	// Nothing here is new business logic — it's the same ListTenants/
+	// GetBalance/CheckReserveFloor/ListAgentDecisions data
+	// services/tui/internal/client already fetches per-tenant over
+	// separate gRPC calls, aggregated server-side into one response so a
+	// browser polling this endpoint doesn't need N+1 round trips per
+	// refresh.
+	GetDashboardSnapshot(context.Context, *GetDashboardSnapshotRequest) (*GetDashboardSnapshotResponse, error)
 	mustEmbedUnimplementedGatewayServer()
 }
 
@@ -181,6 +216,9 @@ func (UnimplementedGatewayServer) SimulateDeposit(context.Context, *SimulateDepo
 }
 func (UnimplementedGatewayServer) StreamActivity(*StreamActivityRequest, grpc.ServerStreamingServer[ActivityEvent]) error {
 	return status.Error(codes.Unimplemented, "method StreamActivity not implemented")
+}
+func (UnimplementedGatewayServer) GetDashboardSnapshot(context.Context, *GetDashboardSnapshotRequest) (*GetDashboardSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDashboardSnapshot not implemented")
 }
 func (UnimplementedGatewayServer) mustEmbedUnimplementedGatewayServer() {}
 func (UnimplementedGatewayServer) testEmbeddedByValue()                 {}
@@ -322,6 +360,24 @@ func _Gateway_StreamActivity_Handler(srv interface{}, stream grpc.ServerStream) 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Gateway_StreamActivityServer = grpc.ServerStreamingServer[ActivityEvent]
 
+func _Gateway_GetDashboardSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDashboardSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).GetDashboardSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_GetDashboardSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).GetDashboardSnapshot(ctx, req.(*GetDashboardSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Gateway_ServiceDesc is the grpc.ServiceDesc for Gateway service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -352,6 +408,10 @@ var Gateway_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SimulateDeposit",
 			Handler:    _Gateway_SimulateDeposit_Handler,
+		},
+		{
+			MethodName: "GetDashboardSnapshot",
+			Handler:    _Gateway_GetDashboardSnapshot_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

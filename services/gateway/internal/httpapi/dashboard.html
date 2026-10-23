@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ration — Live Dashboard</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #141820;
+    --panel-border: #22272f;
+    --fg: #e8ebee;
+    --muted: #8a93a1;
+    --accent: #6ea8fe;
+    --good: #3ddc84;
+    --warn: #f0b429;
+    --bad: #f05a5a;
+    --held: #6ea8fe;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+    font-size: 14px;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 20px 28px 12px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  header .sub {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  #status {
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    display: inline-block;
+  }
+  .dot.live { background: var(--good); }
+  .dot.down { background: var(--bad); }
+
+  main {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr;
+    gap: 20px;
+    padding: 20px 28px 40px;
+    align-items: start;
+  }
+  @media (max-width: 980px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  section.panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  section.panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 14px;
+    font-weight: 600;
+  }
+
+  .tenant-row {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .tenant-row:last-child { border-bottom: none; }
+  .tenant-row .name-line {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .tenant-row .name {
+    font-weight: 600;
+  }
+  .tenant-row .figures {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .gauge {
+    height: 10px;
+    width: 100%;
+    border-radius: 5px;
+    overflow: hidden;
+    display: flex;
+    background: #1b2027;
+  }
+  .gauge .seg-floor { background: var(--bad); }
+  .gauge .seg-headroom { background: var(--good); }
+  .gauge .seg-held { background: var(--held); }
+  .legend {
+    display: flex;
+    gap: 14px;
+    margin-top: 14px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+  table { width: 100%; border-collapse: collapse; }
+  table.decisions td, table.decisions th {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--panel-border);
+    font-size: 12px;
+    vertical-align: top;
+  }
+  table.decisions th {
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+  }
+  .action-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+  }
+  .action-DECLINE { background: rgba(240,90,90,0.15); color: var(--bad); }
+  .action-RATION_BRIDGE, .action-ISSUE_CARD, .action-ADJUST_LIMIT, .action-RELEASE_HOLD {
+    background: rgba(61,220,132,0.15); color: var(--good);
+  }
+  .action-NOTIFY { background: rgba(110,168,254,0.15); color: var(--accent); }
+  .action-UNSPECIFIED { background: rgba(138,147,161,0.15); color: var(--muted); }
+
+  #activity-feed {
+    max-height: 480px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .activity-row {
+    display: flex;
+    gap: 10px;
+    font-size: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .activity-row:last-child { border-bottom: none; }
+  .activity-row .kind {
+    width: 92px;
+    flex: 0 0 auto;
+    color: var(--muted);
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    padding-top: 2px;
+  }
+  .activity-row .time {
+    color: var(--muted);
+    font-size: 10px;
+    flex: 0 0 68px;
+    padding-top: 3px;
+  }
+  .empty {
+    color: var(--muted);
+    font-style: italic;
+    padding: 12px 0;
+  }
+  footer {
+    padding: 0 28px 24px;
+    color: var(--muted);
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Ration — Live Dashboard</h1>
+    <div class="sub">reserve-floor headroom &amp; agent decisions, read-only, no credential required</div>
+  </div>
+  <div id="status"><span class="dot" id="status-dot"></span><span id="status-text">connecting&hellip;</span></div>
+</header>
+<main>
+  <div style="display:flex; flex-direction:column; gap:20px;">
+    <section class="panel">
+      <h2>Tenant headroom</h2>
+      <div id="tenants"><div class="empty">loading&hellip;</div></div>
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--bad)"></span>reserve floor</span>
+        <span><span class="swatch" style="background:var(--good)"></span>headroom</span>
+        <span><span class="swatch" style="background:var(--held)"></span>held</span>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Recent agent decisions</h2>
+      <div id="decisions"><div class="empty">loading&hellip;</div></div>
+    </section>
+  </div>
+  <section class="panel">
+    <h2>Live activity</h2>
+    <div id="activity-feed"><div class="empty">waiting for events&hellip;</div></div>
+  </section>
+</main>
+<footer>
+  snapshot refreshes every 3s &middot; activity streams live via Server-Sent Events &middot; source: gateway's /v1/dashboard/snapshot + /v1/dashboard/activity/stream
+</footer>
+<script>
+(function () {
+  "use strict";
+
+  var SNAPSHOT_URL = "/v1/dashboard/snapshot";
+  var ACTIVITY_STREAM_URL = "/v1/dashboard/activity/stream";
+  var REFRESH_MS = 3000;
+  var MAX_ACTIVITY_ROWS = 200;
+
+  var statusDot = document.getElementById("status-dot");
+  var statusText = document.getElementById("status-text");
+  var tenantsEl = document.getElementById("tenants");
+  var decisionsEl = document.getElementById("decisions");
+  var activityEl = document.getElementById("activity-feed");
+
+  function escapeHTML(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // formatMoney mirrors services/tui/internal/format.Money's logic
+  // closely enough for display purposes (fixed-point minor units +
+  // ISO 4217 code), without pulling in a currency-formatting library
+  // for a read-only dashboard.
+  var CURRENCY_SYMBOLS = { USD: "$", EUR: "€", GBP: "£", JPY: "¥" };
+  function formatMoney(minorUnits, currency) {
+    minorUnits = Number(minorUnits || 0);
+    var neg = minorUnits < 0;
+    var abs = Math.abs(minorUnits);
+    var major = Math.floor(abs / 100);
+    var minor = abs % 100;
+    var grouped = major.toLocaleString("en-US");
+    var sym = CURRENCY_SYMBOLS[(currency || "").toUpperCase()];
+    var out = sym
+      ? sym + grouped + "." + String(minor).padStart(2, "0")
+      : (currency || "").toUpperCase() + " " + grouped + "." + String(minor).padStart(2, "0");
+    return neg ? "-" + out : out;
+  }
+
+  function formatTime(unixSeconds) {
+    if (!unixSeconds) return "-";
+    var d = new Date(unixSeconds * 1000);
+    return d.toISOString().replace("T", " ").slice(0, 19);
+  }
+
+  function renderTenants(tenants) {
+    if (!tenants || tenants.length === 0) {
+      tenantsEl.innerHTML = '<div class="empty">no tenants yet</div>';
+      return;
+    }
+    var html = "";
+    tenants.forEach(function (t) {
+      var floor = Math.max(0, Number(t.reserve_floor_minor_units || 0));
+      var headroom = Math.max(0, Number(t.headroom_minor_units || 0));
+      var held = Math.max(0, Number(t.held_minor_units || 0));
+      var total = floor + headroom + held;
+      var pct = function (v) { return total > 0 ? (v / total * 100) : 0; };
+
+      html += '<div class="tenant-row">' +
+        '<div class="name-line">' +
+          '<span class="name">' + escapeHTML(t.tenant_name || t.tenant_id) + "</span>" +
+          '<span class="figures">headroom ' + escapeHTML(formatMoney(headroom, t.currency)) +
+            " &middot; floor " + escapeHTML(formatMoney(floor, t.currency)) +
+            " &middot; held " + escapeHTML(formatMoney(held, t.currency)) + "</span>" +
+        "</div>" +
+        '<div class="gauge">' +
+          '<div class="seg-floor" style="width:' + pct(floor).toFixed(2) + '%"></div>' +
+          '<div class="seg-headroom" style="width:' + pct(headroom).toFixed(2) + '%"></div>' +
+          '<div class="seg-held" style="width:' + pct(held).toFixed(2) + '%"></div>' +
+        "</div>" +
+      "</div>";
+    });
+    tenantsEl.innerHTML = html;
+  }
+
+  function renderDecisions(decisions) {
+    if (!decisions || decisions.length === 0) {
+      decisionsEl.innerHTML = '<div class="empty">no agent decisions recorded yet</div>';
+      return;
+    }
+    var rows = decisions.slice(0, 25).map(function (d) {
+      var action = String(d.action || "AGENT_ACTION_UNSPECIFIED").replace("AGENT_ACTION_", "");
+      return "<tr>" +
+        "<td>" + escapeHTML(formatTime(d.created_at_unix)) + "</td>" +
+        "<td>" + escapeHTML(d.tenant_name || d.tenant_id) + "</td>" +
+        '<td><span class="action-tag action-' + escapeHTML(action) + '">' + escapeHTML(action) + "</span></td>" +
+        "<td>" + escapeHTML(d.rationale) + "</td>" +
+      "</tr>";
+    }).join("");
+    decisionsEl.innerHTML =
+      '<table class="decisions"><thead><tr><th>When</th><th>Tenant</th><th>Action</th><th>Rationale</th></tr></thead><tbody>' +
+      rows + "</tbody></table>";
+  }
+
+  function prependActivity(evt) {
+    if (activityEl.firstElementChild && activityEl.firstElementChild.classList.contains("empty")) {
+      activityEl.innerHTML = "";
+    }
+    var row = document.createElement("div");
+    row.className = "activity-row";
+    row.innerHTML =
+      '<span class="time">' + escapeHTML(formatTime(evt.at_unix).slice(11)) + "</span>" +
+      '<span class="kind">' + escapeHTML(evt.kind) + "</span>" +
+      "<span>" + escapeHTML(evt.summary) + "</span>";
+    activityEl.insertBefore(row, activityEl.firstChild);
+    while (activityEl.children.length > MAX_ACTIVITY_ROWS) {
+      activityEl.removeChild(activityEl.lastChild);
+    }
+  }
+
+  function setStatus(ok, text) {
+    statusDot.className = "dot " + (ok ? "live" : "down");
+    statusText.textContent = text;
+  }
+
+  function refreshSnapshot() {
+    fetch(SNAPSHOT_URL, { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        renderTenants(data.tenants);
+        renderDecisions(data.recent_decisions);
+      })
+      .catch(function (err) {
+        console.error("snapshot refresh failed", err);
+      });
+  }
+
+  function connectActivityStream() {
+    var es = new EventSource(ACTIVITY_STREAM_URL);
+    es.onopen = function () { setStatus(true, "live"); };
+    es.onerror = function () { setStatus(false, "reconnecting…"); };
+    es.onmessage = function (ev) {
+      try {
+        var evt = JSON.parse(ev.data);
+        prependActivity(evt);
+      } catch (e) {
+        console.error("failed to parse activity event", e);
+      }
+    };
+    return es;
+  }
+
+  refreshSnapshot();
+  setInterval(refreshSnapshot, REFRESH_MS);
+  connectActivityStream();
+})();
+</script>
+</body>
+</html>

@@ -16,6 +16,7 @@ package grpcserver
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	cardissuancepb "github.com/caelum0x/ration/pkg/pb/cardissuance"
@@ -37,11 +38,18 @@ type CardIssuanceClient interface {
 	RationBridgeFunding(ctx context.Context, req *cardissuancepb.RationBridgeFundingRequest) (*cardissuancepb.RationBridgeFundingResponse, error)
 }
 
-// LedgerClient is the subset of ledgerclient.Client SimulateDeposit
-// needs.
+// LedgerClient is the subset of ledgerclient.Client SimulateDeposit and
+// GetDashboardSnapshot need.
 type LedgerClient interface {
 	RecordDeposit(ctx context.Context, req *ledgerpb.RecordDepositRequest) (*ledgerpb.Deposit, error)
 	GetTenant(ctx context.Context, tenantID string) (*ledgerpb.Tenant, error)
+
+	// The remaining four back GetDashboardSnapshot only — see that
+	// method's doc comment.
+	ListTenants(ctx context.Context, req *ledgerpb.ListTenantsRequest) (*ledgerpb.ListTenantsResponse, error)
+	GetBalance(ctx context.Context, tenantID string) (*ledgerpb.Balance, error)
+	CheckReserveFloor(ctx context.Context, tenantID string, proposedDebitMinorUnits int64) (*ledgerpb.CheckReserveFloorResponse, error)
+	ListAgentDecisions(ctx context.Context, tenantID string, limit int32) ([]*ledgerpb.AgentDecision, error)
 }
 
 // Server implements gatewaypb.GatewayServer.
@@ -210,6 +218,99 @@ func (s *Server) SimulateDeposit(ctx context.Context, req *gatewaypb.SimulateDep
 	s.publish(req.GetTenantId(), "deposit", fmt.Sprintf("simulated deposit %s of %d minor units, expected_at=%d, late=%v", deposit.GetId(), req.GetAmountMinorUnits(), expectedAt, req.GetMarkLate()))
 
 	return &gatewaypb.SimulateDepositResponse{DepositId: deposit.GetId()}, nil
+}
+
+// defaultDashboardDecisionsPerTenant/defaultDashboardMaxDecisions are
+// GetDashboardSnapshotRequest's server-side defaults when the caller
+// leaves either field at 0 — the same demo-scale assumption
+// services/tui's own decisionsPerTenant constant documents.
+const (
+	defaultDashboardDecisionsPerTenant = 20
+	defaultDashboardMaxDecisions       = 50
+)
+
+// GetDashboardSnapshot implements gatewaypb.GatewayServer. It is the
+// one aggregate read the judge-facing web dashboard
+// (services/gateway/internal/httpapi's "/v1/dashboard" routes) polls —
+// see gateway.proto's doc comment on the RPC for why this aggregates
+// rather than exposing N+1 separate RPCs to a browser: every tenant's
+// balance/reserve-floor headroom (ledger-core's CheckReserveFloor, the
+// exact number every bridge-funding decision is gated on — never
+// recomputed here from available/reserve-floor separately, so this can
+// never silently drift from the authoritative definition) plus the
+// most recent agent decisions across every tenant, merged and sorted
+// newest-first.
+func (s *Server) GetDashboardSnapshot(ctx context.Context, req *gatewaypb.GetDashboardSnapshotRequest) (*gatewaypb.GetDashboardSnapshotResponse, error) {
+	decisionsPerTenant := req.GetDecisionsPerTenant()
+	if decisionsPerTenant <= 0 {
+		decisionsPerTenant = defaultDashboardDecisionsPerTenant
+	}
+	maxDecisions := int(req.GetMaxDecisions())
+	if maxDecisions <= 0 {
+		maxDecisions = defaultDashboardMaxDecisions
+	}
+
+	tenantsResp, err := s.ledger.ListTenants(ctx, &ledgerpb.ListTenantsRequest{PageSize: 1000})
+	if err != nil {
+		return nil, fmt.Errorf("grpcserver: list tenants for dashboard snapshot: %w", err)
+	}
+
+	snapshots := make([]*gatewaypb.TenantSnapshot, 0, len(tenantsResp.GetTenants()))
+	var allDecisions []*gatewaypb.AgentDecisionSummary
+
+	for _, t := range tenantsResp.GetTenants() {
+		balance, err := s.ledger.GetBalance(ctx, t.GetId())
+		if err != nil {
+			// One tenant's balance lookup failing must not blank out
+			// the whole dashboard for every other tenant — log via the
+			// returned error's absence (no logger threaded into this
+			// package today; skip this tenant's snapshot row, keep
+			// going) rather than failing the entire RPC.
+			continue
+		}
+		reserveResp, err := s.ledger.CheckReserveFloor(ctx, t.GetId(), 0)
+		if err != nil {
+			continue
+		}
+
+		snapshots = append(snapshots, &gatewaypb.TenantSnapshot{
+			TenantId:               t.GetId(),
+			TenantName:             t.GetName(),
+			Currency:               t.GetCurrency(),
+			ReserveFloorMinorUnits: t.GetReserveFloorMinorUnits(),
+			AvailableMinorUnits:    balance.GetAvailableMinorUnits(),
+			HeldMinorUnits:         balance.GetHeldMinorUnits(),
+			HeadroomMinorUnits:     reserveResp.GetHeadroomMinorUnits(),
+		})
+
+		decisions, err := s.ledger.ListAgentDecisions(ctx, t.GetId(), decisionsPerTenant)
+		if err != nil {
+			continue
+		}
+		for _, d := range decisions {
+			allDecisions = append(allDecisions, &gatewaypb.AgentDecisionSummary{
+				TenantId:           d.GetTenantId(),
+				TenantName:         t.GetName(),
+				Trigger:            d.GetTrigger(),
+				Action:             d.GetAction(),
+				Rationale:          d.GetRationale(),
+				PolicySnapshotJson: d.GetPolicySnapshotJson(),
+				CreatedAtUnix:      d.GetCreatedAtUnix(),
+			})
+		}
+	}
+
+	sort.SliceStable(allDecisions, func(i, j int) bool {
+		return allDecisions[i].GetCreatedAtUnix() > allDecisions[j].GetCreatedAtUnix()
+	})
+	if len(allDecisions) > maxDecisions {
+		allDecisions = allDecisions[:maxDecisions]
+	}
+
+	return &gatewaypb.GetDashboardSnapshotResponse{
+		Tenants:         snapshots,
+		RecentDecisions: allDecisions,
+	}, nil
 }
 
 // StreamActivity implements gatewaypb.GatewayServer.

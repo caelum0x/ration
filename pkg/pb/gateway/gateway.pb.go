@@ -750,6 +750,308 @@ func (x *ActivityEvent) GetAtUnix() int64 {
 	return 0
 }
 
+type GetDashboardSnapshotRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// decisions_per_tenant bounds how many of each tenant's most recent
+	// agent decisions are fetched before merging and sorting across
+	// tenants (see services/tui's identical decisionsPerTenant constant
+	// for the same demo-scale rationale). 0 = server default (20).
+	DecisionsPerTenant int32 `protobuf:"varint,1,opt,name=decisions_per_tenant,json=decisionsPerTenant,proto3" json:"decisions_per_tenant,omitempty"`
+	// max_decisions bounds the total size of recent_decisions after
+	// merging across every tenant. 0 = server default (50).
+	MaxDecisions  int32 `protobuf:"varint,2,opt,name=max_decisions,json=maxDecisions,proto3" json:"max_decisions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDashboardSnapshotRequest) Reset() {
+	*x = GetDashboardSnapshotRequest{}
+	mi := &file_gateway_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDashboardSnapshotRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDashboardSnapshotRequest) ProtoMessage() {}
+
+func (x *GetDashboardSnapshotRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_gateway_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDashboardSnapshotRequest.ProtoReflect.Descriptor instead.
+func (*GetDashboardSnapshotRequest) Descriptor() ([]byte, []int) {
+	return file_gateway_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *GetDashboardSnapshotRequest) GetDecisionsPerTenant() int32 {
+	if x != nil {
+		return x.DecisionsPerTenant
+	}
+	return 0
+}
+
+func (x *GetDashboardSnapshotRequest) GetMaxDecisions() int32 {
+	if x != nil {
+		return x.MaxDecisions
+	}
+	return 0
+}
+
+type TenantSnapshot struct {
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	TenantId               string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	TenantName             string                 `protobuf:"bytes,2,opt,name=tenant_name,json=tenantName,proto3" json:"tenant_name,omitempty"`
+	Currency               string                 `protobuf:"bytes,3,opt,name=currency,proto3" json:"currency,omitempty"`
+	ReserveFloorMinorUnits int64                  `protobuf:"varint,4,opt,name=reserve_floor_minor_units,json=reserveFloorMinorUnits,proto3" json:"reserve_floor_minor_units,omitempty"`
+	AvailableMinorUnits    int64                  `protobuf:"varint,5,opt,name=available_minor_units,json=availableMinorUnits,proto3" json:"available_minor_units,omitempty"`
+	HeldMinorUnits         int64                  `protobuf:"varint,6,opt,name=held_minor_units,json=heldMinorUnits,proto3" json:"held_minor_units,omitempty"`
+	// headroom_minor_units is available_minor_units - reserve_floor_minor_units
+	// (ration.ledger.v1's CheckReserveFloor RPC, the exact same number
+	// every bridge-funding decision is gated on) — never recomputed
+	// client-side from the other two fields, so the dashboard can never
+	// silently drift from the authoritative definition if that math ever
+	// changes.
+	HeadroomMinorUnits int64 `protobuf:"varint,7,opt,name=headroom_minor_units,json=headroomMinorUnits,proto3" json:"headroom_minor_units,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *TenantSnapshot) Reset() {
+	*x = TenantSnapshot{}
+	mi := &file_gateway_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TenantSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TenantSnapshot) ProtoMessage() {}
+
+func (x *TenantSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_gateway_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TenantSnapshot.ProtoReflect.Descriptor instead.
+func (*TenantSnapshot) Descriptor() ([]byte, []int) {
+	return file_gateway_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *TenantSnapshot) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *TenantSnapshot) GetTenantName() string {
+	if x != nil {
+		return x.TenantName
+	}
+	return ""
+}
+
+func (x *TenantSnapshot) GetCurrency() string {
+	if x != nil {
+		return x.Currency
+	}
+	return ""
+}
+
+func (x *TenantSnapshot) GetReserveFloorMinorUnits() int64 {
+	if x != nil {
+		return x.ReserveFloorMinorUnits
+	}
+	return 0
+}
+
+func (x *TenantSnapshot) GetAvailableMinorUnits() int64 {
+	if x != nil {
+		return x.AvailableMinorUnits
+	}
+	return 0
+}
+
+func (x *TenantSnapshot) GetHeldMinorUnits() int64 {
+	if x != nil {
+		return x.HeldMinorUnits
+	}
+	return 0
+}
+
+func (x *TenantSnapshot) GetHeadroomMinorUnits() int64 {
+	if x != nil {
+		return x.HeadroomMinorUnits
+	}
+	return 0
+}
+
+type AgentDecisionSummary struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	TenantId           string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	TenantName         string                 `protobuf:"bytes,2,opt,name=tenant_name,json=tenantName,proto3" json:"tenant_name,omitempty"`
+	Trigger            string                 `protobuf:"bytes,3,opt,name=trigger,proto3" json:"trigger,omitempty"`
+	Action             common.AgentAction     `protobuf:"varint,4,opt,name=action,proto3,enum=ration.common.v1.AgentAction" json:"action,omitempty"`
+	Rationale          string                 `protobuf:"bytes,5,opt,name=rationale,proto3" json:"rationale,omitempty"`
+	PolicySnapshotJson string                 `protobuf:"bytes,6,opt,name=policy_snapshot_json,json=policySnapshotJson,proto3" json:"policy_snapshot_json,omitempty"`
+	CreatedAtUnix      int64                  `protobuf:"varint,7,opt,name=created_at_unix,json=createdAtUnix,proto3" json:"created_at_unix,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *AgentDecisionSummary) Reset() {
+	*x = AgentDecisionSummary{}
+	mi := &file_gateway_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentDecisionSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentDecisionSummary) ProtoMessage() {}
+
+func (x *AgentDecisionSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_gateway_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentDecisionSummary.ProtoReflect.Descriptor instead.
+func (*AgentDecisionSummary) Descriptor() ([]byte, []int) {
+	return file_gateway_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *AgentDecisionSummary) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *AgentDecisionSummary) GetTenantName() string {
+	if x != nil {
+		return x.TenantName
+	}
+	return ""
+}
+
+func (x *AgentDecisionSummary) GetTrigger() string {
+	if x != nil {
+		return x.Trigger
+	}
+	return ""
+}
+
+func (x *AgentDecisionSummary) GetAction() common.AgentAction {
+	if x != nil {
+		return x.Action
+	}
+	return common.AgentAction(0)
+}
+
+func (x *AgentDecisionSummary) GetRationale() string {
+	if x != nil {
+		return x.Rationale
+	}
+	return ""
+}
+
+func (x *AgentDecisionSummary) GetPolicySnapshotJson() string {
+	if x != nil {
+		return x.PolicySnapshotJson
+	}
+	return ""
+}
+
+func (x *AgentDecisionSummary) GetCreatedAtUnix() int64 {
+	if x != nil {
+		return x.CreatedAtUnix
+	}
+	return 0
+}
+
+type GetDashboardSnapshotResponse struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Tenants []*TenantSnapshot      `protobuf:"bytes,1,rep,name=tenants,proto3" json:"tenants,omitempty"`
+	// recent_decisions is sorted newest first, merged across every
+	// tenant and capped at the request's max_decisions.
+	RecentDecisions []*AgentDecisionSummary `protobuf:"bytes,2,rep,name=recent_decisions,json=recentDecisions,proto3" json:"recent_decisions,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *GetDashboardSnapshotResponse) Reset() {
+	*x = GetDashboardSnapshotResponse{}
+	mi := &file_gateway_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDashboardSnapshotResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDashboardSnapshotResponse) ProtoMessage() {}
+
+func (x *GetDashboardSnapshotResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_gateway_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDashboardSnapshotResponse.ProtoReflect.Descriptor instead.
+func (*GetDashboardSnapshotResponse) Descriptor() ([]byte, []int) {
+	return file_gateway_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *GetDashboardSnapshotResponse) GetTenants() []*TenantSnapshot {
+	if x != nil {
+		return x.Tenants
+	}
+	return nil
+}
+
+func (x *GetDashboardSnapshotResponse) GetRecentDecisions() []*AgentDecisionSummary {
+	if x != nil {
+		return x.RecentDecisions
+	}
+	return nil
+}
+
 var File_gateway_proto protoreflect.FileDescriptor
 
 const file_gateway_proto_rawDesc = "" +
@@ -804,7 +1106,31 @@ const file_gateway_proto_rawDesc = "" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x18\n" +
 	"\asummary\x18\x04 \x01(\tR\asummary\x12\x17\n" +
-	"\aat_unix\x18\x05 \x01(\x03R\x06atUnix2\x8a\x05\n" +
+	"\aat_unix\x18\x05 \x01(\x03R\x06atUnix\"t\n" +
+	"\x1bGetDashboardSnapshotRequest\x120\n" +
+	"\x14decisions_per_tenant\x18\x01 \x01(\x05R\x12decisionsPerTenant\x12#\n" +
+	"\rmax_decisions\x18\x02 \x01(\x05R\fmaxDecisions\"\xb5\x02\n" +
+	"\x0eTenantSnapshot\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1f\n" +
+	"\vtenant_name\x18\x02 \x01(\tR\n" +
+	"tenantName\x12\x1a\n" +
+	"\bcurrency\x18\x03 \x01(\tR\bcurrency\x129\n" +
+	"\x19reserve_floor_minor_units\x18\x04 \x01(\x03R\x16reserveFloorMinorUnits\x122\n" +
+	"\x15available_minor_units\x18\x05 \x01(\x03R\x13availableMinorUnits\x12(\n" +
+	"\x10held_minor_units\x18\x06 \x01(\x03R\x0eheldMinorUnits\x120\n" +
+	"\x14headroom_minor_units\x18\a \x01(\x03R\x12headroomMinorUnits\"\x9d\x02\n" +
+	"\x14AgentDecisionSummary\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1f\n" +
+	"\vtenant_name\x18\x02 \x01(\tR\n" +
+	"tenantName\x12\x18\n" +
+	"\atrigger\x18\x03 \x01(\tR\atrigger\x125\n" +
+	"\x06action\x18\x04 \x01(\x0e2\x1d.ration.common.v1.AgentActionR\x06action\x12\x1c\n" +
+	"\trationale\x18\x05 \x01(\tR\trationale\x120\n" +
+	"\x14policy_snapshot_json\x18\x06 \x01(\tR\x12policySnapshotJson\x12&\n" +
+	"\x0fcreated_at_unix\x18\a \x01(\x03R\rcreatedAtUnix\"\xaf\x01\n" +
+	"\x1cGetDashboardSnapshotResponse\x12;\n" +
+	"\atenants\x18\x01 \x03(\v2!.ration.gateway.v1.TenantSnapshotR\atenants\x12R\n" +
+	"\x10recent_decisions\x18\x02 \x03(\v2'.ration.gateway.v1.AgentDecisionSummaryR\x0frecentDecisions2\x83\x06\n" +
 	"\aGateway\x12I\n" +
 	"\tIssueCard\x12#.ration.gateway.v1.IssueCardRequest\x1a\x17.ration.gateway.v1.Card\x12U\n" +
 	"\x0fAdjustCardLimit\x12).ration.gateway.v1.AdjustCardLimitRequest\x1a\x17.ration.gateway.v1.Card\x12E\n" +
@@ -812,7 +1138,8 @@ const file_gateway_proto_rawDesc = "" +
 	"\tListCards\x12#.ration.gateway.v1.ListCardsRequest\x1a$.ration.gateway.v1.ListCardsResponse\x12t\n" +
 	"\x13RationBridgeFunding\x12-.ration.gateway.v1.RationBridgeFundingRequest\x1a..ration.gateway.v1.RationBridgeFundingResponse\x12h\n" +
 	"\x0fSimulateDeposit\x12).ration.gateway.v1.SimulateDepositRequest\x1a*.ration.gateway.v1.SimulateDepositResponse\x12^\n" +
-	"\x0eStreamActivity\x12(.ration.gateway.v1.StreamActivityRequest\x1a .ration.gateway.v1.ActivityEvent0\x01B+Z)github.com/caelum0x/ration/pkg/pb/gatewayb\x06proto3"
+	"\x0eStreamActivity\x12(.ration.gateway.v1.StreamActivityRequest\x1a .ration.gateway.v1.ActivityEvent0\x01\x12w\n" +
+	"\x14GetDashboardSnapshot\x12..ration.gateway.v1.GetDashboardSnapshotRequest\x1a/.ration.gateway.v1.GetDashboardSnapshotResponseB+Z)github.com/caelum0x/ration/pkg/pb/gatewayb\x06proto3"
 
 var (
 	file_gateway_proto_rawDescOnce sync.Once
@@ -826,44 +1153,54 @@ func file_gateway_proto_rawDescGZIP() []byte {
 	return file_gateway_proto_rawDescData
 }
 
-var file_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_gateway_proto_goTypes = []any{
-	(*Card)(nil),                        // 0: ration.gateway.v1.Card
-	(*IssueCardRequest)(nil),            // 1: ration.gateway.v1.IssueCardRequest
-	(*AdjustCardLimitRequest)(nil),      // 2: ration.gateway.v1.AdjustCardLimitRequest
-	(*GetCardRequest)(nil),              // 3: ration.gateway.v1.GetCardRequest
-	(*ListCardsRequest)(nil),            // 4: ration.gateway.v1.ListCardsRequest
-	(*ListCardsResponse)(nil),           // 5: ration.gateway.v1.ListCardsResponse
-	(*RationBridgeFundingRequest)(nil),  // 6: ration.gateway.v1.RationBridgeFundingRequest
-	(*RationBridgeFundingResponse)(nil), // 7: ration.gateway.v1.RationBridgeFundingResponse
-	(*SimulateDepositRequest)(nil),      // 8: ration.gateway.v1.SimulateDepositRequest
-	(*SimulateDepositResponse)(nil),     // 9: ration.gateway.v1.SimulateDepositResponse
-	(*StreamActivityRequest)(nil),       // 10: ration.gateway.v1.StreamActivityRequest
-	(*ActivityEvent)(nil),               // 11: ration.gateway.v1.ActivityEvent
-	(common.CardStatus)(0),              // 12: ration.common.v1.CardStatus
+	(*Card)(nil),                         // 0: ration.gateway.v1.Card
+	(*IssueCardRequest)(nil),             // 1: ration.gateway.v1.IssueCardRequest
+	(*AdjustCardLimitRequest)(nil),       // 2: ration.gateway.v1.AdjustCardLimitRequest
+	(*GetCardRequest)(nil),               // 3: ration.gateway.v1.GetCardRequest
+	(*ListCardsRequest)(nil),             // 4: ration.gateway.v1.ListCardsRequest
+	(*ListCardsResponse)(nil),            // 5: ration.gateway.v1.ListCardsResponse
+	(*RationBridgeFundingRequest)(nil),   // 6: ration.gateway.v1.RationBridgeFundingRequest
+	(*RationBridgeFundingResponse)(nil),  // 7: ration.gateway.v1.RationBridgeFundingResponse
+	(*SimulateDepositRequest)(nil),       // 8: ration.gateway.v1.SimulateDepositRequest
+	(*SimulateDepositResponse)(nil),      // 9: ration.gateway.v1.SimulateDepositResponse
+	(*StreamActivityRequest)(nil),        // 10: ration.gateway.v1.StreamActivityRequest
+	(*ActivityEvent)(nil),                // 11: ration.gateway.v1.ActivityEvent
+	(*GetDashboardSnapshotRequest)(nil),  // 12: ration.gateway.v1.GetDashboardSnapshotRequest
+	(*TenantSnapshot)(nil),               // 13: ration.gateway.v1.TenantSnapshot
+	(*AgentDecisionSummary)(nil),         // 14: ration.gateway.v1.AgentDecisionSummary
+	(*GetDashboardSnapshotResponse)(nil), // 15: ration.gateway.v1.GetDashboardSnapshotResponse
+	(common.CardStatus)(0),               // 16: ration.common.v1.CardStatus
+	(common.AgentAction)(0),              // 17: ration.common.v1.AgentAction
 }
 var file_gateway_proto_depIdxs = []int32{
-	12, // 0: ration.gateway.v1.Card.status:type_name -> ration.common.v1.CardStatus
+	16, // 0: ration.gateway.v1.Card.status:type_name -> ration.common.v1.CardStatus
 	0,  // 1: ration.gateway.v1.ListCardsResponse.cards:type_name -> ration.gateway.v1.Card
-	1,  // 2: ration.gateway.v1.Gateway.IssueCard:input_type -> ration.gateway.v1.IssueCardRequest
-	2,  // 3: ration.gateway.v1.Gateway.AdjustCardLimit:input_type -> ration.gateway.v1.AdjustCardLimitRequest
-	3,  // 4: ration.gateway.v1.Gateway.GetCard:input_type -> ration.gateway.v1.GetCardRequest
-	4,  // 5: ration.gateway.v1.Gateway.ListCards:input_type -> ration.gateway.v1.ListCardsRequest
-	6,  // 6: ration.gateway.v1.Gateway.RationBridgeFunding:input_type -> ration.gateway.v1.RationBridgeFundingRequest
-	8,  // 7: ration.gateway.v1.Gateway.SimulateDeposit:input_type -> ration.gateway.v1.SimulateDepositRequest
-	10, // 8: ration.gateway.v1.Gateway.StreamActivity:input_type -> ration.gateway.v1.StreamActivityRequest
-	0,  // 9: ration.gateway.v1.Gateway.IssueCard:output_type -> ration.gateway.v1.Card
-	0,  // 10: ration.gateway.v1.Gateway.AdjustCardLimit:output_type -> ration.gateway.v1.Card
-	0,  // 11: ration.gateway.v1.Gateway.GetCard:output_type -> ration.gateway.v1.Card
-	5,  // 12: ration.gateway.v1.Gateway.ListCards:output_type -> ration.gateway.v1.ListCardsResponse
-	7,  // 13: ration.gateway.v1.Gateway.RationBridgeFunding:output_type -> ration.gateway.v1.RationBridgeFundingResponse
-	9,  // 14: ration.gateway.v1.Gateway.SimulateDeposit:output_type -> ration.gateway.v1.SimulateDepositResponse
-	11, // 15: ration.gateway.v1.Gateway.StreamActivity:output_type -> ration.gateway.v1.ActivityEvent
-	9,  // [9:16] is the sub-list for method output_type
-	2,  // [2:9] is the sub-list for method input_type
-	2,  // [2:2] is the sub-list for extension type_name
-	2,  // [2:2] is the sub-list for extension extendee
-	0,  // [0:2] is the sub-list for field type_name
+	17, // 2: ration.gateway.v1.AgentDecisionSummary.action:type_name -> ration.common.v1.AgentAction
+	13, // 3: ration.gateway.v1.GetDashboardSnapshotResponse.tenants:type_name -> ration.gateway.v1.TenantSnapshot
+	14, // 4: ration.gateway.v1.GetDashboardSnapshotResponse.recent_decisions:type_name -> ration.gateway.v1.AgentDecisionSummary
+	1,  // 5: ration.gateway.v1.Gateway.IssueCard:input_type -> ration.gateway.v1.IssueCardRequest
+	2,  // 6: ration.gateway.v1.Gateway.AdjustCardLimit:input_type -> ration.gateway.v1.AdjustCardLimitRequest
+	3,  // 7: ration.gateway.v1.Gateway.GetCard:input_type -> ration.gateway.v1.GetCardRequest
+	4,  // 8: ration.gateway.v1.Gateway.ListCards:input_type -> ration.gateway.v1.ListCardsRequest
+	6,  // 9: ration.gateway.v1.Gateway.RationBridgeFunding:input_type -> ration.gateway.v1.RationBridgeFundingRequest
+	8,  // 10: ration.gateway.v1.Gateway.SimulateDeposit:input_type -> ration.gateway.v1.SimulateDepositRequest
+	10, // 11: ration.gateway.v1.Gateway.StreamActivity:input_type -> ration.gateway.v1.StreamActivityRequest
+	12, // 12: ration.gateway.v1.Gateway.GetDashboardSnapshot:input_type -> ration.gateway.v1.GetDashboardSnapshotRequest
+	0,  // 13: ration.gateway.v1.Gateway.IssueCard:output_type -> ration.gateway.v1.Card
+	0,  // 14: ration.gateway.v1.Gateway.AdjustCardLimit:output_type -> ration.gateway.v1.Card
+	0,  // 15: ration.gateway.v1.Gateway.GetCard:output_type -> ration.gateway.v1.Card
+	5,  // 16: ration.gateway.v1.Gateway.ListCards:output_type -> ration.gateway.v1.ListCardsResponse
+	7,  // 17: ration.gateway.v1.Gateway.RationBridgeFunding:output_type -> ration.gateway.v1.RationBridgeFundingResponse
+	9,  // 18: ration.gateway.v1.Gateway.SimulateDeposit:output_type -> ration.gateway.v1.SimulateDepositResponse
+	11, // 19: ration.gateway.v1.Gateway.StreamActivity:output_type -> ration.gateway.v1.ActivityEvent
+	15, // 20: ration.gateway.v1.Gateway.GetDashboardSnapshot:output_type -> ration.gateway.v1.GetDashboardSnapshotResponse
+	13, // [13:21] is the sub-list for method output_type
+	5,  // [5:13] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_gateway_proto_init() }
@@ -877,7 +1214,7 @@ func file_gateway_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gateway_proto_rawDesc), len(file_gateway_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

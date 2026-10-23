@@ -21,6 +21,9 @@
 //	POST   /v1/tenants/{tenant_id}/bridge-funding    RationBridgeFunding
 //	POST   /v1/tenants/{tenant_id}/deposits/simulate SimulateDeposit
 //	GET    /v1/activity[?tenant_id=...]              StreamActivity (newline-delimited JSON)
+//	GET    /v1/dashboard                             judge-facing live web dashboard (dashboard.go, static HTML/JS)
+//	GET    /v1/dashboard/snapshot                    GetDashboardSnapshot
+//	GET    /v1/dashboard/activity/stream             StreamActivity (text/event-stream, for dashboard.html's EventSource)
 //
 // This package only ever imports the generated gatewaypb client type —
 // never services/card-issuance's or services/gateway's internal
@@ -51,6 +54,7 @@ type GatewayClient interface {
 	RationBridgeFunding(ctx context.Context, in *gatewaypb.RationBridgeFundingRequest, opts ...grpc.CallOption) (*gatewaypb.RationBridgeFundingResponse, error)
 	SimulateDeposit(ctx context.Context, in *gatewaypb.SimulateDepositRequest, opts ...grpc.CallOption) (*gatewaypb.SimulateDepositResponse, error)
 	StreamActivity(ctx context.Context, in *gatewaypb.StreamActivityRequest, opts ...grpc.CallOption) (gatewaypb.Gateway_StreamActivityClient, error)
+	GetDashboardSnapshot(ctx context.Context, in *gatewaypb.GetDashboardSnapshotRequest, opts ...grpc.CallOption) (*gatewaypb.GetDashboardSnapshotResponse, error)
 }
 
 // Handler serves the REST/JSON facade described in this package's doc
@@ -58,6 +62,23 @@ type GatewayClient interface {
 type Handler struct {
 	client GatewayClient
 	log    *slog.Logger
+
+	// dashboardOperatorToken is gateway's OWN operator-scoped credential
+	// (see cmd/gateway/main.go's operatorToken, the same one already
+	// attached to gateway's own outgoing ledger-core calls) — set via
+	// SetDashboardOperatorToken, used ONLY by the dashboard's activity
+	// SSE handler (dashboard.go), NEVER by handleStreamActivity's
+	// existing, documented /v1/activity route. See dashboard.go's doc
+	// comment for exactly why that split is intentional: the dashboard
+	// is a deliberately public, read-only, zero-login-friction surface
+	// (so it carries gateway's own identity, not a caller-supplied
+	// one), while /v1/activity remains a real REST API route that must
+	// keep requiring its caller's own forwarded credential — injecting
+	// this token there instead would silently turn every REST caller
+	// into gateway's operator for that route, undermining the exact
+	// per-caller authorization internal/tenantauth's StreamActivity
+	// enforcement exists to provide.
+	dashboardOperatorToken string
 }
 
 // NewHandler constructs a Handler that translates every request into a
@@ -67,6 +88,21 @@ func NewHandler(client GatewayClient, log *slog.Logger) *Handler {
 		log = slog.Default()
 	}
 	return &Handler{client: client, log: log}
+}
+
+// SetDashboardOperatorToken configures the operator-scoped credential
+// the dashboard's live activity stream (dashboard.go's
+// handleDashboardActivityStream) presents to gateway's own gRPC
+// StreamActivity RPC — see the Handler.dashboardOperatorToken field's
+// doc comment for why this exists as its own narrow setter rather than
+// a NewHandler constructor parameter (every existing call site, this
+// package's own tests included, keeps working unchanged when the
+// dashboard isn't exercised). Optional: an empty token leaves the
+// dashboard's activity feed non-functional (every SSE connection will
+// fail with the same Unauthenticated status any other uncredentialed
+// StreamActivity caller gets) without affecting any other route.
+func (h *Handler) SetDashboardOperatorToken(token string) {
+	h.dashboardOperatorToken = token
 }
 
 // forwardedCredentialHeaders are the two HTTP headers a REST caller may
@@ -119,5 +155,8 @@ func (h *Handler) Mux() http.Handler {
 	mux.HandleFunc("POST /v1/tenants/{tenant_id}/bridge-funding", h.handleRationBridgeFunding)
 	mux.HandleFunc("POST /v1/tenants/{tenant_id}/deposits/simulate", h.handleSimulateDeposit)
 	mux.HandleFunc("GET /v1/activity", h.handleStreamActivity)
+	mux.HandleFunc("GET /v1/dashboard", h.handleDashboardPage)
+	mux.HandleFunc("GET /v1/dashboard/snapshot", h.handleDashboardSnapshot)
+	mux.HandleFunc("GET /v1/dashboard/activity/stream", h.handleDashboardActivityStream)
 	return mux
 }

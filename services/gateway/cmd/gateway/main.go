@@ -282,6 +282,12 @@ func run(log *slog.Logger) error {
 	defer selfConn.Close()
 
 	restAPI := httpapi.NewHandler(gatewaypb.NewGatewayClient(selfConn), log)
+	// The dashboard's live activity feed presents gateway's own
+	// operator credential (see httpapi.Handler.dashboardOperatorToken's
+	// doc comment) — the same operatorToken already minted above for
+	// gateway's own outgoing ledger-core calls, reused here rather than
+	// minting a second one.
+	restAPI.SetDashboardOperatorToken(operatorToken)
 	httpSrv := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           restAPI.Mux(),

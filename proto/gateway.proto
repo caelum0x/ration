@@ -22,6 +22,19 @@ service Gateway {
   rpc SimulateDeposit(SimulateDepositRequest) returns (SimulateDepositResponse);
 
   rpc StreamActivity(StreamActivityRequest) returns (stream ActivityEvent);
+
+  // GetDashboardSnapshot is the one aggregate read the judge-facing web
+  // dashboard (services/gateway/internal/httpapi's "/v1/dashboard"
+  // routes) polls: every tenant's reserve-floor headroom in one round
+  // trip, plus the most recent agent decisions (rationale and
+  // policy_snapshot_json included) across every tenant, newest first.
+  // Nothing here is new business logic — it's the same ListTenants/
+  // GetBalance/CheckReserveFloor/ListAgentDecisions data
+  // services/tui/internal/client already fetches per-tenant over
+  // separate gRPC calls, aggregated server-side into one response so a
+  // browser polling this endpoint doesn't need N+1 round trips per
+  // refresh.
+  rpc GetDashboardSnapshot(GetDashboardSnapshotRequest) returns (GetDashboardSnapshotResponse);
 }
 
 message Card {
@@ -95,4 +108,48 @@ message ActivityEvent {
   string kind = 3; // "deposit", "card", "agent_decision", "ledger_entry"
   string summary = 4;
   int64 at_unix = 5;
+}
+
+message GetDashboardSnapshotRequest {
+  // decisions_per_tenant bounds how many of each tenant's most recent
+  // agent decisions are fetched before merging and sorting across
+  // tenants (see services/tui's identical decisionsPerTenant constant
+  // for the same demo-scale rationale). 0 = server default (20).
+  int32 decisions_per_tenant = 1;
+  // max_decisions bounds the total size of recent_decisions after
+  // merging across every tenant. 0 = server default (50).
+  int32 max_decisions = 2;
+}
+
+message TenantSnapshot {
+  string tenant_id = 1;
+  string tenant_name = 2;
+  string currency = 3;
+  int64 reserve_floor_minor_units = 4;
+  int64 available_minor_units = 5;
+  int64 held_minor_units = 6;
+  // headroom_minor_units is available_minor_units - reserve_floor_minor_units
+  // (ration.ledger.v1's CheckReserveFloor RPC, the exact same number
+  // every bridge-funding decision is gated on) — never recomputed
+  // client-side from the other two fields, so the dashboard can never
+  // silently drift from the authoritative definition if that math ever
+  // changes.
+  int64 headroom_minor_units = 7;
+}
+
+message AgentDecisionSummary {
+  string tenant_id = 1;
+  string tenant_name = 2;
+  string trigger = 3;
+  ration.common.v1.AgentAction action = 4;
+  string rationale = 5;
+  string policy_snapshot_json = 6;
+  int64 created_at_unix = 7;
+}
+
+message GetDashboardSnapshotResponse {
+  repeated TenantSnapshot tenants = 1;
+  // recent_decisions is sorted newest first, merged across every
+  // tenant and capped at the request's max_decisions.
+  repeated AgentDecisionSummary recent_decisions = 2;
 }
