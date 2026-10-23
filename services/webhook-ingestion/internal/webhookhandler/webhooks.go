@@ -97,26 +97,46 @@ func (h *Handler) handleAirwallexWebhook(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleTransactionCreated finds the tenant's oldest not-yet-received
-// deposit whose expected amount matches the incoming transaction and
-// marks it received. In a real deployment, Airwallex's transaction
-// payload or a prior RecordDeposit's external_ref would carry a tighter
-// correlation key; matching on (tenant, amount, not-yet-received) is
-// sufficient for the single-deposit-at-a-time demo scenarios this
-// project targets, and is intentionally conservative: if nothing matches,
-// it logs and returns success rather than guessing.
+// handleTransactionCreated correlates an incoming Airwallex transaction
+// to one specific expected deposit and marks it received.
+//
+// Matching is two-tiered:
+//
+//  1. Exact correlation-key match: if payload.Reference is non-empty,
+//     prefer the (sole) not-yet-received deposit for this tenant whose
+//     own ExternalRef equals it exactly — set back when that deposit was
+//     first recorded (gateway's SimulateDeposit, or any RecordDeposit
+//     caller that assigns a reference it told the tenant to use on
+//     their wire transfer). This is a correct identification, not a
+//     heuristic: no two concurrently-outstanding deposits are ever given
+//     the same reference, so an exact match cannot misattribute funds
+//     regardless of how many deposits of the same amount a tenant has
+//     outstanding at once.
+//  2. Amount heuristic fallback: (tenant, amount, not-yet-received,
+//     oldest) — used only when no reference is present on the
+//     transaction, or no deposit's ExternalRef matches it (e.g. an
+//     older/pre-migration deposit recorded before a reference was
+//     assigned). This remains the same conservative "when in doubt about
+//     which of two same-amount deposits a transaction belongs to, guess
+//     oldest-first" behavior as before this field existed, and inherits
+//     the exact misattribution risk the heuristic alone cannot close:
+//     two outstanding same-amount deposits for one tenant, neither
+//     carrying a reference the transaction also carries.
+//
+// Either tier: if nothing matches, it logs and returns success rather
+// than guessing.
 //
 // Deposits already marked received (ReceivedAtUnix != 0) are excluded
-// from the candidate set entirely — not just preferred against. Without
-// this, a tenant with two deposits of the same amount (e.g. two $500
-// recurring deposits) where the older one already settled would have a
-// genuinely new webhook for the newer deposit re-match the older,
-// already-received one (it's still the "oldest" expected_at_unix in an
-// amount-only comparison). MarkDepositReceived then no-ops against the
-// already-Received deposit (ledger-core's own idempotency), silently
-// discarding the real money: the new deposit never gets marked received
-// and the tenant's available balance never reflects funds that actually
-// arrived.
+// from the candidate set entirely in both tiers — not just preferred
+// against. Without this, a tenant with two deposits of the same amount
+// (e.g. two $500 recurring deposits) where the older one already
+// settled would have a genuinely new webhook for the newer deposit
+// re-match the older, already-received one (it's still the "oldest"
+// expected_at_unix in an amount-only comparison). MarkDepositReceived
+// then no-ops against the already-Received deposit (ledger-core's own
+// idempotency), silently discarding the real money: the new deposit
+// never gets marked received and the tenant's available balance never
+// reflects funds that actually arrived.
 func (h *Handler) handleTransactionCreated(ctx context.Context, env *airwallex.WebhookEnvelope) error {
 	var payload airwallex.GlobalAccountTransactionPayload
 	if err := json.Unmarshal(env.Data, &payload); err != nil {
@@ -131,25 +151,19 @@ func (h *Handler) handleTransactionCreated(ctx context.Context, env *airwallex.W
 		return fmt.Errorf("list deposits for %s: %w", payload.TenantID, err)
 	}
 
-	var match *ledgerpb.Deposit
-	for _, d := range deposits {
-		if d.GetReceivedAtUnix() != 0 {
-			// Already settled — never a valid candidate for a new
-			// transaction event, regardless of amount or age.
-			continue
-		}
-		if d.GetExpectedAmount().GetMinorUnits() != payload.AmountMinorUnits {
-			continue
-		}
-		if match == nil || d.GetExpectedAtUnix() < match.GetExpectedAtUnix() {
-			match = d
-		}
+	match := matchDepositByReference(deposits, payload.Reference)
+	matchedBy := "reference"
+	if match == nil {
+		match = matchDepositByAmountHeuristic(deposits, payload.AmountMinorUnits)
+		matchedBy = "amount_heuristic"
 	}
 	if match == nil {
 		h.log.Warn("webhook: no matching expected deposit found, skipping",
-			"tenant_id", payload.TenantID, "amount_minor_units", payload.AmountMinorUnits)
+			"tenant_id", payload.TenantID, "amount_minor_units", payload.AmountMinorUnits, "reference", payload.Reference)
 		return nil
 	}
+	h.log.Info("webhook: matched transaction to expected deposit",
+		"tenant_id", payload.TenantID, "deposit_id", match.GetId(), "matched_by", matchedBy)
 
 	receivedAt := payload.OccurredAtUnix
 	if receivedAt == 0 {

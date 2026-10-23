@@ -111,6 +111,20 @@ type GlobalAccountTransactionPayload struct {
 	AmountMinorUnits int64  `json:"amount_minor_units"`
 	Currency         string `json:"currency"`
 	OccurredAtUnix   int64  `json:"occurred_at_unix"`
+	// Reference is the free-text reference/description a depositor put
+	// on their wire transfer, mirrored back by Airwallex on the
+	// resulting global_account.transaction.created event (real
+	// Airwallex global account transactions carry this as their own
+	// "description"/"reference" field). When RecordDeposit was called
+	// with external_ref set to whatever reference the tenant was told
+	// to use, this is how webhookhandler.handleTransactionCreated
+	// correlates this specific transaction to that specific expected
+	// deposit directly — see that function's doc comment for why this
+	// is strictly more reliable than matching on (tenant, amount,
+	// oldest-unreceived) alone. May be empty for a transaction that
+	// genuinely carries no reference, in which case the amount-based
+	// heuristic is the only option, same as before this field existed.
+	Reference string `json:"reference"`
 }
 
 // ParseWebhookEnvelope unmarshals a verified webhook body into its
