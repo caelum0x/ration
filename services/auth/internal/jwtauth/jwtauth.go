@@ -46,8 +46,12 @@ var header = map[string]string{"alg": "HS256", "typ": "JWT"}
 type claims struct {
 	Subject  string `json:"sub"`
 	TenantID string `json:"tenant_id"`
-	IssuedAt int64  `json:"iat"`
-	Expires  int64  `json:"exp"`
+	// IsOperator marks a cross-tenant token (see proto/auth.proto's
+	// MintJWTRequest.is_operator doc comment). TenantID is always "" for
+	// an operator token.
+	IsOperator bool  `json:"is_operator,omitempty"`
+	IssuedAt   int64 `json:"iat"`
+	Expires    int64 `json:"exp"`
 }
 
 // Signer mints and verifies tokens under one HMAC signing key.
@@ -79,9 +83,16 @@ func (s *Signer) sign(signingInput string) string {
 
 // Mint produces a signed token for (subject, tenantID), expiring after
 // ttl (clamped to (0, MaxTTL], defaulting to DefaultTTL when ttl <= 0).
-func (s *Signer) Mint(subject, tenantID string, ttl time.Duration) (token string, expiresAt time.Time, err error) {
+//
+// isOperator mints a cross-tenant token instead (see
+// proto/auth.proto's MintJWTRequest.is_operator doc comment); when true,
+// tenantID must be empty.
+func (s *Signer) Mint(subject, tenantID string, ttl time.Duration, isOperator bool) (token string, expiresAt time.Time, err error) {
 	if subject == "" {
 		return "", time.Time{}, fmt.Errorf("jwtauth: subject is required")
+	}
+	if isOperator && tenantID != "" {
+		return "", time.Time{}, fmt.Errorf("jwtauth: tenant_id must be empty for an operator token")
 	}
 	if ttl <= 0 {
 		ttl = DefaultTTL
@@ -98,10 +109,11 @@ func (s *Signer) Mint(subject, tenantID string, ttl time.Duration) (token string
 		return "", time.Time{}, fmt.Errorf("jwtauth: encode header: %w", err)
 	}
 	payloadJSON, err := json.Marshal(claims{
-		Subject:  subject,
-		TenantID: tenantID,
-		IssuedAt: now.Unix(),
-		Expires:  exp.Unix(),
+		Subject:    subject,
+		TenantID:   tenantID,
+		IsOperator: isOperator,
+		IssuedAt:   now.Unix(),
+		Expires:    exp.Unix(),
 	})
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("jwtauth: encode claims: %w", err)
@@ -114,10 +126,11 @@ func (s *Signer) Mint(subject, tenantID string, ttl time.Duration) (token string
 
 // Result is the outcome of verifying a token.
 type Result struct {
-	Valid    bool
-	Subject  string
-	TenantID string
-	Reason   string // explains an invalid result; empty when Valid.
+	Valid      bool
+	Subject    string
+	TenantID   string
+	IsOperator bool
+	Reason     string // explains an invalid result; empty when Valid.
 }
 
 // Verify checks token's signature and expiry.
@@ -143,10 +156,10 @@ func (s *Signer) Verify(token string) Result {
 	}
 
 	if s.now().Unix() > c.Expires {
-		return Result{Subject: c.Subject, TenantID: c.TenantID, Reason: ErrExpired.Error()}
+		return Result{Subject: c.Subject, TenantID: c.TenantID, IsOperator: c.IsOperator, Reason: ErrExpired.Error()}
 	}
 
-	return Result{Valid: true, Subject: c.Subject, TenantID: c.TenantID}
+	return Result{Valid: true, Subject: c.Subject, TenantID: c.TenantID, IsOperator: c.IsOperator}
 }
 
 // splitJWT returns the three dot-separated segments of token, or nil if

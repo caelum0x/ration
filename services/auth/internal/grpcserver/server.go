@@ -32,7 +32,7 @@ func New(keys *apikey.Store, jwt *jwtauth.Signer, ca *servicecertca.CA) *Server 
 
 // IssueAPIKey implements authpb.AuthServer.
 func (s *Server) IssueAPIKey(ctx context.Context, req *authpb.IssueAPIKeyRequest) (*authpb.IssueAPIKeyResponse, error) {
-	keyID, secret, createdAt, err := s.keys.Issue(req.GetTenantId(), req.GetName())
+	keyID, secret, createdAt, err := s.keys.Issue(req.GetTenantId(), req.GetName(), req.GetIsOperator())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -41,6 +41,7 @@ func (s *Server) IssueAPIKey(ctx context.Context, req *authpb.IssueAPIKeyRequest
 		TenantId:      req.GetTenantId(),
 		Secret:        secret,
 		CreatedAtUnix: createdAt,
+		IsOperator:    req.GetIsOperator(),
 	}, nil
 }
 
@@ -48,10 +49,11 @@ func (s *Server) IssueAPIKey(ctx context.Context, req *authpb.IssueAPIKeyRequest
 func (s *Server) VerifyAPIKey(ctx context.Context, req *authpb.VerifyAPIKeyRequest) (*authpb.VerifyAPIKeyResponse, error) {
 	result := s.keys.Verify(req.GetSecret())
 	return &authpb.VerifyAPIKeyResponse{
-		Valid:    result.Valid,
-		KeyId:    result.KeyID,
-		TenantId: result.TenantID,
-		Reason:   result.Reason,
+		Valid:      result.Valid,
+		KeyId:      result.KeyID,
+		TenantId:   result.TenantID,
+		Reason:     result.Reason,
+		IsOperator: result.IsOperator,
 	}, nil
 }
 
@@ -68,7 +70,7 @@ func (s *Server) RevokeAPIKey(ctx context.Context, req *authpb.RevokeAPIKeyReque
 
 // MintJWT implements authpb.AuthServer.
 func (s *Server) MintJWT(ctx context.Context, req *authpb.MintJWTRequest) (*authpb.MintJWTResponse, error) {
-	token, expiresAt, err := s.jwt.Mint(req.GetSubject(), req.GetTenantId(), time.Duration(req.GetTtlSeconds())*time.Second)
+	token, expiresAt, err := s.jwt.Mint(req.GetSubject(), req.GetTenantId(), time.Duration(req.GetTtlSeconds())*time.Second, req.GetIsOperator())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -79,10 +81,11 @@ func (s *Server) MintJWT(ctx context.Context, req *authpb.MintJWTRequest) (*auth
 func (s *Server) VerifyJWT(ctx context.Context, req *authpb.VerifyJWTRequest) (*authpb.VerifyJWTResponse, error) {
 	result := s.jwt.Verify(req.GetToken())
 	return &authpb.VerifyJWTResponse{
-		Valid:    result.Valid,
-		Subject:  result.Subject,
-		TenantId: result.TenantID,
-		Reason:   result.Reason,
+		Valid:      result.Valid,
+		Subject:    result.Subject,
+		TenantId:   result.TenantID,
+		Reason:     result.Reason,
+		IsOperator: result.IsOperator,
 	}, nil
 }
 

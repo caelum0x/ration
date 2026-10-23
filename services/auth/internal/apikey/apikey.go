@@ -45,6 +45,10 @@ type record struct {
 	secretHashHex string
 	createdAtUnix int64
 	revoked       bool
+	// isOperator marks a cross-tenant credential (see
+	// proto/auth.proto's IssueAPIKeyRequest.is_operator doc comment).
+	// tenantID is always "" for an operator record.
+	isOperator bool
 }
 
 // Store issues, verifies and revokes API keys. Safe for concurrent use.
@@ -96,8 +100,18 @@ func hashSecret(secret string) string {
 // Issue mints a new API key for tenantID, returning the key's ID and its
 // plaintext secret. The secret is never stored or retrievable again
 // after this call returns — only its hash is kept.
-func (s *Store) Issue(tenantID, name string) (keyID, secret string, createdAtUnix int64, err error) {
-	if tenantID == "" {
+//
+// isOperator mints a cross-tenant credential instead (see
+// proto/auth.proto's IssueAPIKeyRequest.is_operator doc comment); when
+// true, tenantID must be empty — an operator key is not bound to any one
+// tenant, so supplying one would be misleading about what the key can
+// actually do.
+func (s *Store) Issue(tenantID, name string, isOperator bool) (keyID, secret string, createdAtUnix int64, err error) {
+	if isOperator {
+		if tenantID != "" {
+			return "", "", 0, fmt.Errorf("apikey: tenant_id must be empty for an operator key")
+		}
+	} else if tenantID == "" {
 		return "", "", 0, fmt.Errorf("apikey: tenant_id is required")
 	}
 	secret, err = newSecret()
@@ -116,6 +130,7 @@ func (s *Store) Issue(tenantID, name string) (keyID, secret string, createdAtUni
 		name:          name,
 		secretHashHex: hashSecret(secret),
 		createdAtUnix: createdAtUnix,
+		isOperator:    isOperator,
 	}
 	s.byID[keyID] = rec
 	s.byHash[rec.secretHashHex] = rec
@@ -124,10 +139,11 @@ func (s *Store) Issue(tenantID, name string) (keyID, secret string, createdAtUni
 
 // VerifyResult is the outcome of verifying a presented secret.
 type VerifyResult struct {
-	Valid    bool
-	KeyID    string
-	TenantID string
-	Reason   string // explains an invalid result; empty when Valid.
+	Valid      bool
+	KeyID      string
+	TenantID   string
+	IsOperator bool
+	Reason     string // explains an invalid result; empty when Valid.
 }
 
 // Verify checks a presented secret against every issued, non-revoked
@@ -146,9 +162,9 @@ func (s *Store) Verify(secret string) VerifyResult {
 		return VerifyResult{Reason: "not found"}
 	}
 	if rec.revoked {
-		return VerifyResult{KeyID: rec.keyID, TenantID: rec.tenantID, Reason: "revoked"}
+		return VerifyResult{KeyID: rec.keyID, TenantID: rec.tenantID, IsOperator: rec.isOperator, Reason: "revoked"}
 	}
-	return VerifyResult{Valid: true, KeyID: rec.keyID, TenantID: rec.tenantID}
+	return VerifyResult{Valid: true, KeyID: rec.keyID, TenantID: rec.tenantID, IsOperator: rec.isOperator}
 }
 
 // Revoke immediately invalidates keyID. Returns ErrNotFound if keyID was

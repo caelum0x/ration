@@ -11,7 +11,7 @@ func TestMintAndVerify_Success(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	token, expiresAt, err := s.Mint("operator_1", "tenant_1", time.Hour)
+	token, expiresAt, err := s.Mint("operator_1", "tenant_1", time.Hour, false)
 	if err != nil {
 		t.Fatalf("Mint() error = %v", err)
 	}
@@ -39,7 +39,7 @@ func TestNew_RequiresSigningKey(t *testing.T) {
 
 func TestMint_RequiresSubject(t *testing.T) {
 	s, _ := New([]byte("key"))
-	if _, _, err := s.Mint("", "tenant_1", time.Hour); err == nil {
+	if _, _, err := s.Mint("", "tenant_1", time.Hour, false); err == nil {
 		t.Fatal("Mint() expected error for empty subject, got nil")
 	}
 }
@@ -49,7 +49,7 @@ func TestMint_DefaultAndMaxTTL(t *testing.T) {
 	s, _ := New([]byte("key"))
 	s.now = func() time.Time { return fixedNow }
 
-	_, expiresAt, err := s.Mint("sub", "tenant_1", 0)
+	_, expiresAt, err := s.Mint("sub", "tenant_1", 0, false)
 	if err != nil {
 		t.Fatalf("Mint() error = %v", err)
 	}
@@ -57,7 +57,7 @@ func TestMint_DefaultAndMaxTTL(t *testing.T) {
 		t.Errorf("expiresAt = %v, want %v (DefaultTTL)", expiresAt, fixedNow.Add(DefaultTTL))
 	}
 
-	_, expiresAt, err = s.Mint("sub", "tenant_1", 365*24*time.Hour)
+	_, expiresAt, err = s.Mint("sub", "tenant_1", 365*24*time.Hour, false)
 	if err != nil {
 		t.Fatalf("Mint() error = %v", err)
 	}
@@ -70,7 +70,7 @@ func TestVerify_WrongSigningKeyFails(t *testing.T) {
 	s1, _ := New([]byte("key-one"))
 	s2, _ := New([]byte("key-two"))
 
-	token, _, err := s1.Mint("sub", "tenant_1", time.Hour)
+	token, _, err := s1.Mint("sub", "tenant_1", time.Hour, false)
 	if err != nil {
 		t.Fatalf("Mint() error = %v", err)
 	}
@@ -86,7 +86,7 @@ func TestVerify_ExpiredToken(t *testing.T) {
 	s, _ := New([]byte("key"))
 	s.now = func() time.Time { return fixedNow }
 
-	token, _, err := s.Mint("sub", "tenant_1", time.Minute)
+	token, _, err := s.Mint("sub", "tenant_1", time.Minute, false)
 	if err != nil {
 		t.Fatalf("Mint() error = %v", err)
 	}
@@ -113,7 +113,7 @@ func TestVerify_MalformedToken(t *testing.T) {
 
 func TestVerify_TamperedPayload(t *testing.T) {
 	s, _ := New([]byte("key"))
-	token, _, err := s.Mint("sub", "tenant_1", time.Hour)
+	token, _, err := s.Mint("sub", "tenant_1", time.Hour, false)
 	if err != nil {
 		t.Fatalf("Mint() error = %v", err)
 	}

@@ -4,7 +4,7 @@ import "testing"
 
 func TestIssueAndVerify_Success(t *testing.T) {
 	s := New()
-	keyID, secret, createdAt, err := s.Issue("tenant_1", "CLI key")
+	keyID, secret, createdAt, err := s.Issue("tenant_1", "CLI key", false)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
@@ -26,18 +26,18 @@ func TestIssueAndVerify_Success(t *testing.T) {
 
 func TestIssue_RequiresTenantID(t *testing.T) {
 	s := New()
-	if _, _, _, err := s.Issue("", "name"); err == nil {
+	if _, _, _, err := s.Issue("", "name", false); err == nil {
 		t.Fatal("Issue() expected error for empty tenant_id, got nil")
 	}
 }
 
 func TestIssue_SecretsAreUnique(t *testing.T) {
 	s := New()
-	_, secret1, _, err := s.Issue("tenant_1", "a")
+	_, secret1, _, err := s.Issue("tenant_1", "a", false)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
-	_, secret2, _, err := s.Issue("tenant_1", "b")
+	_, secret2, _, err := s.Issue("tenant_1", "b", false)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
@@ -67,7 +67,7 @@ func TestVerify_EmptySecret(t *testing.T) {
 
 func TestRevoke_InvalidatesKey(t *testing.T) {
 	s := New()
-	keyID, secret, _, err := s.Issue("tenant_1", "name")
+	keyID, secret, _, err := s.Issue("tenant_1", "name", false)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
@@ -94,7 +94,7 @@ func TestRevoke_NotFound(t *testing.T) {
 
 func TestRevoke_Idempotent(t *testing.T) {
 	s := New()
-	keyID, _, _, err := s.Issue("tenant_1", "name")
+	keyID, _, _, err := s.Issue("tenant_1", "name", false)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}

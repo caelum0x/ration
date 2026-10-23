@@ -22,9 +22,20 @@ const (
 )
 
 type IssueAPIKeyRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"` // human-readable label, e.g. "ration CLI, Ada's laptop"
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	TenantId string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Name     string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"` // human-readable label, e.g. "ration CLI, Ada's laptop"
+	// is_operator mints an operator-scoped key: one that authenticates as
+	// a trusted cross-tenant caller (the CLI/TUI operator dashboards, the
+	// agent's polling loop) rather than a single tenant. internal/tenantauth
+	// on gateway (and any future ledger-core-side equivalent) treats an
+	// operator-scoped credential as pre-authorized for every tenant_id a
+	// request carries, instead of requiring an exact match — this is how
+	// "show me every tenant's live activity" (the TUI dashboard) and "act
+	// on whichever tenant has a late deposit this tick" (the agent) stay
+	// possible once tenant-scoped authorization is actually enforced.
+	// tenant_id is ignored (and should be left empty) when this is true.
+	IsOperator    bool `protobuf:"varint,3,opt,name=is_operator,json=isOperator,proto3" json:"is_operator,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -73,6 +84,13 @@ func (x *IssueAPIKeyRequest) GetName() string {
 	return ""
 }
 
+func (x *IssueAPIKeyRequest) GetIsOperator() bool {
+	if x != nil {
+		return x.IsOperator
+	}
+	return false
+}
+
 type IssueAPIKeyResponse struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	KeyId    string                 `protobuf:"bytes,1,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
@@ -81,6 +99,7 @@ type IssueAPIKeyResponse struct {
 	// — Auth never stores or returns it again.
 	Secret        string `protobuf:"bytes,3,opt,name=secret,proto3" json:"secret,omitempty"`
 	CreatedAtUnix int64  `protobuf:"varint,4,opt,name=created_at_unix,json=createdAtUnix,proto3" json:"created_at_unix,omitempty"`
+	IsOperator    bool   `protobuf:"varint,5,opt,name=is_operator,json=isOperator,proto3" json:"is_operator,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -143,6 +162,13 @@ func (x *IssueAPIKeyResponse) GetCreatedAtUnix() int64 {
 	return 0
 }
 
+func (x *IssueAPIKeyResponse) GetIsOperator() bool {
+	if x != nil {
+		return x.IsOperator
+	}
+	return false
+}
+
 type VerifyAPIKeyRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Secret        string                 `protobuf:"bytes,1,opt,name=secret,proto3" json:"secret,omitempty"`
@@ -193,7 +219,10 @@ type VerifyAPIKeyResponse struct {
 	KeyId    string                 `protobuf:"bytes,2,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
 	TenantId string                 `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	// reason explains an invalid result (e.g. "revoked", "not found"); empty when valid.
-	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	Reason string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	// is_operator mirrors IssueAPIKeyRequest.is_operator for the key that
+	// was verified; always false when valid is false.
+	IsOperator    bool `protobuf:"varint,5,opt,name=is_operator,json=isOperator,proto3" json:"is_operator,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -254,6 +283,13 @@ func (x *VerifyAPIKeyResponse) GetReason() string {
 		return x.Reason
 	}
 	return ""
+}
+
+func (x *VerifyAPIKeyResponse) GetIsOperator() bool {
+	if x != nil {
+		return x.IsOperator
+	}
+	return false
 }
 
 type RevokeAPIKeyRequest struct {
@@ -345,10 +381,15 @@ func (x *RevokeAPIKeyResponse) GetRevoked() bool {
 }
 
 type MintJWTRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Subject       string                 `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
-	TenantId      string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	TtlSeconds    int64                  `protobuf:"varint,3,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"` // 0 = server default (see services/auth/internal/jwt)
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Subject    string                 `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
+	TenantId   string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	TtlSeconds int64                  `protobuf:"varint,3,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"` // 0 = server default (see services/auth/internal/jwt)
+	// is_operator mints an operator-scoped JWT — see
+	// IssueAPIKeyRequest.is_operator's doc comment for what that means and
+	// why it exists. tenant_id is ignored (and should be left empty) when
+	// this is true.
+	IsOperator    bool `protobuf:"varint,4,opt,name=is_operator,json=isOperator,proto3" json:"is_operator,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -402,6 +443,13 @@ func (x *MintJWTRequest) GetTtlSeconds() int64 {
 		return x.TtlSeconds
 	}
 	return 0
+}
+
+func (x *MintJWTRequest) GetIsOperator() bool {
+	if x != nil {
+		return x.IsOperator
+	}
+	return false
 }
 
 type MintJWTResponse struct {
@@ -501,11 +549,14 @@ func (x *VerifyJWTRequest) GetToken() string {
 }
 
 type VerifyJWTResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Valid         bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
-	Subject       string                 `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
-	TenantId      string                 `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"` // explains an invalid result (e.g. "expired", "bad signature")
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Valid    bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
+	Subject  string                 `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
+	TenantId string                 `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	Reason   string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"` // explains an invalid result (e.g. "expired", "bad signature")
+	// is_operator mirrors MintJWTRequest.is_operator for the token that was
+	// verified; always false when valid is false.
+	IsOperator    bool `protobuf:"varint,5,opt,name=is_operator,json=isOperator,proto3" json:"is_operator,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -566,6 +617,13 @@ func (x *VerifyJWTResponse) GetReason() string {
 		return x.Reason
 	}
 	return ""
+}
+
+func (x *VerifyJWTResponse) GetIsOperator() bool {
+	if x != nil {
+		return x.IsOperator
+	}
+	return false
 }
 
 type IssueServiceCertRequest struct {
@@ -696,41 +754,51 @@ var File_auth_proto protoreflect.FileDescriptor
 const file_auth_proto_rawDesc = "" +
 	"\n" +
 	"\n" +
-	"auth.proto\x12\x0eration.auth.v1\"E\n" +
+	"auth.proto\x12\x0eration.auth.v1\"f\n" +
 	"\x12IssueAPIKeyRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\"\x89\x01\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n" +
+	"\vis_operator\x18\x03 \x01(\bR\n" +
+	"isOperator\"\xaa\x01\n" +
 	"\x13IssueAPIKeyResponse\x12\x15\n" +
 	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x16\n" +
 	"\x06secret\x18\x03 \x01(\tR\x06secret\x12&\n" +
-	"\x0fcreated_at_unix\x18\x04 \x01(\x03R\rcreatedAtUnix\"-\n" +
+	"\x0fcreated_at_unix\x18\x04 \x01(\x03R\rcreatedAtUnix\x12\x1f\n" +
+	"\vis_operator\x18\x05 \x01(\bR\n" +
+	"isOperator\"-\n" +
 	"\x13VerifyAPIKeyRequest\x12\x16\n" +
-	"\x06secret\x18\x01 \x01(\tR\x06secret\"x\n" +
+	"\x06secret\x18\x01 \x01(\tR\x06secret\"\x99\x01\n" +
 	"\x14VerifyAPIKeyResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x15\n" +
 	"\x06key_id\x18\x02 \x01(\tR\x05keyId\x12\x1b\n" +
 	"\ttenant_id\x18\x03 \x01(\tR\btenantId\x12\x16\n" +
-	"\x06reason\x18\x04 \x01(\tR\x06reason\",\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\x1f\n" +
+	"\vis_operator\x18\x05 \x01(\bR\n" +
+	"isOperator\",\n" +
 	"\x13RevokeAPIKeyRequest\x12\x15\n" +
 	"\x06key_id\x18\x01 \x01(\tR\x05keyId\"0\n" +
 	"\x14RevokeAPIKeyResponse\x12\x18\n" +
-	"\arevoked\x18\x01 \x01(\bR\arevoked\"h\n" +
+	"\arevoked\x18\x01 \x01(\bR\arevoked\"\x89\x01\n" +
 	"\x0eMintJWTRequest\x12\x18\n" +
 	"\asubject\x18\x01 \x01(\tR\asubject\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1f\n" +
 	"\vttl_seconds\x18\x03 \x01(\x03R\n" +
-	"ttlSeconds\"O\n" +
+	"ttlSeconds\x12\x1f\n" +
+	"\vis_operator\x18\x04 \x01(\bR\n" +
+	"isOperator\"O\n" +
 	"\x0fMintJWTResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12&\n" +
 	"\x0fexpires_at_unix\x18\x02 \x01(\x03R\rexpiresAtUnix\"(\n" +
 	"\x10VerifyJWTRequest\x12\x14\n" +
-	"\x05token\x18\x01 \x01(\tR\x05token\"x\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\"\x99\x01\n" +
 	"\x11VerifyJWTResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x18\n" +
 	"\asubject\x18\x02 \x01(\tR\asubject\x12\x1b\n" +
 	"\ttenant_id\x18\x03 \x01(\tR\btenantId\x12\x16\n" +
-	"\x06reason\x18\x04 \x01(\tR\x06reason\"v\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\x1f\n" +
+	"\vis_operator\x18\x05 \x01(\bR\n" +
+	"isOperator\"v\n" +
 	"\x17IssueServiceCertRequest\x12!\n" +
 	"\fservice_name\x18\x01 \x01(\tR\vserviceName\x12\x17\n" +
 	"\acsr_pem\x18\x02 \x01(\fR\x06csrPem\x12\x1f\n" +
