@@ -55,10 +55,14 @@ type Config struct {
 	RateLimitSweepInterval time.Duration
 
 	// RequireTenantAuth gates internal/tenantauth's interceptor
-	// (docs/THREAT-MODEL.md's "Known gaps" item 1): off by default, the
-	// same opt-in pattern as MTLS.Enabled above, since the demo/CLI/TUI
-	// flows don't present a credential on every call yet (see
-	// internal/tenantauth's package doc for the precise follow-up TODO).
+	// (docs/THREAT-MODEL.md's "Known gaps" item 1). Defaults to true:
+	// services/cli, services/tui and services/agent each now mint an
+	// operator-scoped credential at startup and attach it to every
+	// gateway call (see each service's internal/authclient and
+	// proto/auth.proto's is_operator field), so a bare `make run-demo`
+	// is a credentialed demo, not an all-requests-rejected one. Still
+	// override-able via RATION_GATEWAY_REQUIRE_TENANT_AUTH=false for a
+	// deployment that genuinely has no caller wired for this yet.
 	RequireTenantAuth bool
 }
 
@@ -101,7 +105,7 @@ func Load() (*Config, error) {
 	}
 	cfg.RateLimitSweepInterval = time.Duration(sweepMinutes) * time.Minute
 
-	cfg.RequireTenantAuth, err = getenvBoolDefault("RATION_GATEWAY_REQUIRE_TENANT_AUTH", false)
+	cfg.RequireTenantAuth, err = getenvBoolDefault("RATION_GATEWAY_REQUIRE_TENANT_AUTH", true)
 	if err != nil {
 		return nil, err
 	}

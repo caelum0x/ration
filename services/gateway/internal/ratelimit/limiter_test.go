@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+var errTestResolverUnreachable = errors.New("card-issuance unreachable")
 
 // fakeClock lets tests advance time deterministically instead of
 // sleeping real wall-clock time.
@@ -102,7 +105,7 @@ func TestSweep_EvictsOnlyIdleBuckets(t *testing.T) {
 
 func TestKeyFor_UsesTenantIDWhenPresent(t *testing.T) {
 	req := &gatewaypb.IssueCardRequest{TenantId: "tenant-123"}
-	key := keyFor(context.Background(), req)
+	key := keyFor(context.Background(), nil, req)
 	if key != "tenant:tenant-123" {
 		t.Fatalf("expected tenant-scoped key, got %q", key)
 	}
@@ -110,7 +113,7 @@ func TestKeyFor_UsesTenantIDWhenPresent(t *testing.T) {
 
 func TestKeyFor_FallsBackToPeerWhenNoTenantID(t *testing.T) {
 	req := &gatewaypb.GetCardRequest{CardId: "card-123"}
-	key := keyFor(context.Background(), req)
+	key := keyFor(context.Background(), nil, req)
 	if key != "peer:unknown" {
 		t.Fatalf("expected peer fallback key, got %q", key)
 	}
@@ -118,15 +121,47 @@ func TestKeyFor_FallsBackToPeerWhenNoTenantID(t *testing.T) {
 
 func TestKeyFor_FallsBackToPeerWhenTenantIDEmpty(t *testing.T) {
 	req := &gatewaypb.ListCardsRequest{TenantId: ""}
-	key := keyFor(context.Background(), req)
+	key := keyFor(context.Background(), nil, req)
 	if key != "peer:unknown" {
 		t.Fatalf("expected peer fallback for empty tenant_id, got %q", key)
 	}
 }
 
+// fakeCardResolver is a scriptable cardtenant.Resolver for keyFor's
+// card_id -> tenant_id resolution path.
+type fakeCardResolver struct {
+	tenantByCard map[string]string
+	err          error
+}
+
+func (f *fakeCardResolver) ResolveTenantID(ctx context.Context, cardID string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.tenantByCard[cardID], nil
+}
+
+func TestKeyFor_ResolvesCardIDToTenantWhenResolverConfigured(t *testing.T) {
+	req := &gatewaypb.GetCardRequest{CardId: "card-123"}
+	resolver := &fakeCardResolver{tenantByCard: map[string]string{"card-123": "tenant-123"}}
+	key := keyFor(context.Background(), resolver, req)
+	if key != "tenant:tenant-123" {
+		t.Fatalf("expected resolved tenant-scoped key, got %q", key)
+	}
+}
+
+func TestKeyFor_FallsBackToPeerWhenResolverErrors(t *testing.T) {
+	req := &gatewaypb.GetCardRequest{CardId: "card-123"}
+	resolver := &fakeCardResolver{err: errTestResolverUnreachable}
+	key := keyFor(context.Background(), resolver, req)
+	if key != "peer:unknown" {
+		t.Fatalf("expected peer fallback when resolver errors, got %q", key)
+	}
+}
+
 func TestUnaryServerInterceptor_AllowsThenDenies(t *testing.T) {
 	l, _ := newTestLimiter(1, 1)
-	interceptor := UnaryServerInterceptor(l)
+	interceptor := UnaryServerInterceptor(l, nil)
 	handlerCalls := 0
 	handler := func(ctx context.Context, req any) (any, error) {
 		handlerCalls++
@@ -152,7 +187,7 @@ func TestUnaryServerInterceptor_AllowsThenDenies(t *testing.T) {
 
 func TestUnaryServerInterceptor_IndependentTenants(t *testing.T) {
 	l, _ := newTestLimiter(1, 1)
-	interceptor := UnaryServerInterceptor(l)
+	interceptor := UnaryServerInterceptor(l, nil)
 	handler := func(ctx context.Context, req any) (any, error) { return "ok", nil }
 	info := &grpc.UnaryServerInfo{FullMethod: "/ration.gateway.v1.Gateway/IssueCard"}
 

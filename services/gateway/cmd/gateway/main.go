@@ -31,6 +31,7 @@ import (
 	"github.com/caelum0x/ration/services/gateway/internal/activity"
 	"github.com/caelum0x/ration/services/gateway/internal/authclient"
 	"github.com/caelum0x/ration/services/gateway/internal/cardissuanceclient"
+	"github.com/caelum0x/ration/services/gateway/internal/cardtenant"
 	"github.com/caelum0x/ration/services/gateway/internal/config"
 	"github.com/caelum0x/ration/services/gateway/internal/grpcserver"
 	"github.com/caelum0x/ration/services/gateway/internal/httpapi"
@@ -185,6 +186,28 @@ func run(log *slog.Logger) error {
 	}()
 	defer close(sweepStop)
 
+	// cardResolver closes docs/THREAT-MODEL.md item 1(a): GetCard/
+	// AdjustCardLimit carry only card_id, not tenant_id, so both
+	// internal/tenantauth and internal/ratelimit resolve it against
+	// card-issuance (the authoritative owner, cached — see
+	// internal/cardtenant's doc comment) before applying their
+	// per-tenant checks to those two RPCs.
+	cardResolver := cardtenant.NewCache(cards, cardtenant.DefaultTTL)
+	cardResolverSweepStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(cardtenant.DefaultTTL)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				cardResolver.Sweep(cardtenant.DefaultTTL)
+			case <-cardResolverSweepStop:
+				return
+			}
+		}
+	}()
+	defer close(cardResolverSweepStop)
+
 	mtlsServerOpt, err := cfg.MTLS.ServerOption()
 	if err != nil {
 		return err
@@ -195,10 +218,15 @@ func run(log *slog.Logger) error {
 		grpc.ChainUnaryInterceptor(
 			telemetry.UnaryServerInterceptor(log),
 			met.UnaryServerInterceptor(),
-			ratelimit.UnaryServerInterceptor(limiter),
-			tenantauth.UnaryServerInterceptor(auth, cfg.RequireTenantAuth),
+			ratelimit.UnaryServerInterceptor(limiter, cardResolver),
+			tenantauth.UnaryServerInterceptor(auth, cfg.RequireTenantAuth, cardResolver),
 		),
-		grpc.ChainStreamInterceptor(telemetry.StreamServerInterceptor(log), met.StreamServerInterceptor(), ratelimit.StreamServerInterceptor(limiter)),
+		grpc.ChainStreamInterceptor(
+			telemetry.StreamServerInterceptor(log),
+			met.StreamServerInterceptor(),
+			ratelimit.StreamServerInterceptor(limiter),
+			tenantauth.StreamServerInterceptor(auth, cfg.RequireTenantAuth),
+		),
 	)
 	gatewaypb.RegisterGatewayServer(grpcServer, srv)
 

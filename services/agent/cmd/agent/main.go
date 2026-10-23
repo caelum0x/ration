@@ -21,6 +21,7 @@ import (
 	ledger "github.com/caelum0x/ration/pkg/pb/ledger"
 	"github.com/caelum0x/ration/pkg/telemetry"
 
+	"github.com/caelum0x/ration/services/agent/internal/authclient"
 	"github.com/caelum0x/ration/services/agent/internal/ledgerclient"
 	"github.com/caelum0x/ration/services/agent/internal/llm"
 	"github.com/caelum0x/ration/services/agent/internal/loop"
@@ -30,11 +31,19 @@ import (
 const (
 	defaultLedgerCoreAddr = "localhost:7001"
 	defaultGatewayAddr    = "localhost:7002"
+	defaultAuthAddr       = "localhost:7010"
 	defaultPollInterval   = 10 * time.Second
 	defaultMetricsAddr    = "localhost:9093"
 
 	serviceName    = "agent"
 	serviceVersion = "0.1.0"
+
+	// operatorCredentialTTL bounds how long the agent's one minted
+	// operator JWT (see internal/authclient.MintOperatorJWT) stays
+	// valid. The agent is a long-running poll loop, so — like the TUI —
+	// this is deliberately close to jwtauth.MaxTTL (24h) rather than a
+	// short default.
+	operatorCredentialTTL = 20 * time.Hour
 )
 
 func main() {
@@ -79,6 +88,7 @@ func run(logger *slog.Logger) error {
 
 	ledgerAddr := envOrDefault("LEDGER_CORE_ADDR", defaultLedgerCoreAddr)
 	gatewayAddr := envOrDefault("GATEWAY_GRPC_ADDR", defaultGatewayAddr)
+	authAddr := envOrDefault("AUTH_GRPC_ADDR", defaultAuthAddr)
 	pollInterval := pollIntervalFromEnv(logger)
 
 	if os.Getenv("ANTHROPIC_API_KEY") == "" {
@@ -114,11 +124,32 @@ func run(logger *slog.Logger) error {
 	}
 	defer ledgerConn.Close()
 
+	// Mint a single operator-scoped JWT from auth and attach it to every
+	// gateway RPC this process makes (see internal/authclient's doc
+	// comment for why the agent needs operator scope, not a tenant-
+	// scoped credential) — without this, RationBridgeFunding/IssueCard/
+	// AdjustCardLimit would start failing the moment
+	// RATION_GATEWAY_REQUIRE_TENANT_AUTH is enforced, breaking the
+	// agent's entire decision loop, not just hardening it.
+	authClient, err := authclient.Dial(authAddr)
+	if err != nil {
+		return err
+	}
+	operatorToken, _, err := authClient.MintOperatorJWT(bootCtx, "ration-agent", operatorCredentialTTL)
+	authClient.Close()
+	if err != nil {
+		return err
+	}
+
 	gatewayDialOpt, err := mtlsCfg.WithDefaultServerName("gateway").DialOption()
 	if err != nil {
 		return err
 	}
-	gatewayConn, err := grpc.NewClient(gatewayAddr, append([]grpc.DialOption{gatewayDialOpt}, commonDialOpts...)...)
+	gatewayDialOpts := append([]grpc.DialOption{
+		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(operatorToken)),
+		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(operatorToken)),
+	}, commonDialOpts...)
+	gatewayConn, err := grpc.NewClient(gatewayAddr, append([]grpc.DialOption{gatewayDialOpt}, gatewayDialOpts...)...)
 	if err != nil {
 		return err
 	}
@@ -139,6 +170,7 @@ func run(logger *slog.Logger) error {
 	logger.Info("agent starting",
 		"ledger_core_addr", ledgerAddr,
 		"gateway_grpc_addr", gatewayAddr,
+		"auth_grpc_addr", authAddr,
 		"poll_interval", pollInterval.String(),
 		"model", provider.Model,
 	)

@@ -14,6 +14,7 @@ import (
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -30,9 +31,16 @@ type fakeGatewayClient struct {
 	getCardErr       error
 	issueCardErr     error
 	simulateDeposits int
+
+	// capturedCtx records the context the most recent call was made
+	// with, so tests can assert on forwarded outgoing gRPC metadata
+	// (see TestClientContext_ForwardsCredentialHeaders) without needing
+	// a real gRPC transport.
+	capturedCtx context.Context
 }
 
 func (f *fakeGatewayClient) IssueCard(ctx context.Context, in *gatewaypb.IssueCardRequest, opts ...grpc.CallOption) (*gatewaypb.Card, error) {
+	f.capturedCtx = ctx
 	if f.issueCardErr != nil {
 		return nil, f.issueCardErr
 	}
@@ -145,6 +153,38 @@ func TestHandleIssueCard(t *testing.T) {
 	}
 	if got.Status != "CARD_STATUS_ACTIVE" {
 		t.Errorf("Status = %q, want CARD_STATUS_ACTIVE", got.Status)
+	}
+}
+
+func TestHandleIssueCard_ForwardsCredentialHeadersAsOutgoingMetadata(t *testing.T) {
+	// Without this, every tenant-scoped RPC behind
+	// RATION_GATEWAY_REQUIRE_TENANT_AUTH would 401 for every REST
+	// caller, since cmd/gateway/main.go's loopback connection from this
+	// process to its own gRPC listener carries no credential of its own
+	// — see clientContext's doc comment.
+	fake := &fakeGatewayClient{}
+	h := NewHandler(fake, nil)
+
+	body := `{"tenant_id":"tenant_1","cardholder_name":"Ada Lovelace","limit_minor_units":50000,"limit_interval":"monthly","currency":"USD"}`
+	req := httptest.NewRequest("POST", "/v1/cards", strings.NewReader(body))
+	req.Header.Set("X-Api-Key", "rk_test_secret")
+	req.Header.Set("Authorization", "Bearer jwt-token")
+	rec := httptest.NewRecorder()
+
+	h.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != 201 {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	md, ok := metadata.FromOutgoingContext(fake.capturedCtx)
+	if !ok {
+		t.Fatal("no outgoing gRPC metadata on the context passed to the client")
+	}
+	if got := md.Get("x-api-key"); len(got) != 1 || got[0] != "rk_test_secret" {
+		t.Errorf("x-api-key metadata = %v, want [rk_test_secret]", got)
+	}
+	if got := md.Get("authorization"); len(got) != 1 || got[0] != "Bearer jwt-token" {
+		t.Errorf("authorization metadata = %v, want [Bearer jwt-token]", got)
 	}
 }
 

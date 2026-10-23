@@ -35,7 +35,7 @@ func (h *Handler) handleRationBridgeFunding(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	resp, err := h.client.RationBridgeFunding(r.Context(), &gatewaypb.RationBridgeFundingRequest{
+	resp, err := h.client.RationBridgeFunding(clientContext(r), &gatewaypb.RationBridgeFundingRequest{
 		TenantId:            tenantID,
 		RequestedMinorUnits: body.RequestedMinorUnits,
 		Reason:              body.Reason,

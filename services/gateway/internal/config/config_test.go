@@ -47,20 +47,20 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.AuthAddr != "localhost:7010" {
 		t.Errorf("AuthAddr = %q, want localhost:7010", cfg.AuthAddr)
 	}
-	if cfg.RequireTenantAuth {
-		t.Errorf("RequireTenantAuth = true, want false by default")
+	if !cfg.RequireTenantAuth {
+		t.Errorf("RequireTenantAuth = false, want true by default")
 	}
 }
 
 func TestLoad_RequireTenantAuthFromEnv(t *testing.T) {
 	clearEnv(t)
-	t.Setenv("RATION_GATEWAY_REQUIRE_TENANT_AUTH", "true")
+	t.Setenv("RATION_GATEWAY_REQUIRE_TENANT_AUTH", "false")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
-	if !cfg.RequireTenantAuth {
-		t.Errorf("RequireTenantAuth = false, want true")
+	if cfg.RequireTenantAuth {
+		t.Errorf("RequireTenantAuth = true, want false when explicitly overridden")
 	}
 }
 

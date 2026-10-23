@@ -78,26 +78,26 @@ func (c *Client) withTimeout(ctx context.Context) (context.Context, context.Canc
 }
 
 // VerifyAPIKey checks secret against auth's stored key hashes. The
-// four-value return (rather than a struct) matches
+// five-value return (rather than a struct) matches
 // internal/tenantauth.Verifier exactly, so *Client satisfies that
 // interface with no adapter needed.
-func (c *Client) VerifyAPIKey(ctx context.Context, secret string) (tenantID string, valid bool, reason string, err error) {
+func (c *Client) VerifyAPIKey(ctx context.Context, secret string) (tenantID string, valid bool, isOperator bool, reason string, err error) {
 	ctx, cancel := c.withTimeout(ctx)
 	defer cancel()
 	resp, err := c.stub.VerifyAPIKey(ctx, &authpb.VerifyAPIKeyRequest{Secret: secret})
 	if err != nil {
-		return "", false, "", err
+		return "", false, false, "", err
 	}
-	return resp.GetTenantId(), resp.GetValid(), resp.GetReason(), nil
+	return resp.GetTenantId(), resp.GetValid(), resp.GetIsOperator(), resp.GetReason(), nil
 }
 
 // VerifyJWT checks token's signature and expiry against auth.
-func (c *Client) VerifyJWT(ctx context.Context, token string) (tenantID string, valid bool, reason string, err error) {
+func (c *Client) VerifyJWT(ctx context.Context, token string) (tenantID string, valid bool, isOperator bool, reason string, err error) {
 	ctx, cancel := c.withTimeout(ctx)
 	defer cancel()
 	resp, err := c.stub.VerifyJWT(ctx, &authpb.VerifyJWTRequest{Token: token})
 	if err != nil {
-		return "", false, "", err
+		return "", false, false, "", err
 	}
-	return resp.GetTenantId(), resp.GetValid(), resp.GetReason(), nil
+	return resp.GetTenantId(), resp.GetValid(), resp.GetIsOperator(), resp.GetReason(), nil
 }

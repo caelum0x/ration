@@ -70,7 +70,7 @@ func (h *Handler) handleIssueCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	card, err := h.client.IssueCard(r.Context(), &gatewaypb.IssueCardRequest{
+	card, err := h.client.IssueCard(clientContext(r), &gatewaypb.IssueCardRequest{
 		TenantId:        body.TenantID,
 		CardholderName:  body.CardholderName,
 		LimitMinorUnits: body.LimitMinorUnits,
@@ -101,7 +101,7 @@ func (h *Handler) handleGetCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	card, err := h.client.GetCard(r.Context(), &gatewaypb.GetCardRequest{CardId: cardID})
+	card, err := h.client.GetCard(clientContext(r), &gatewaypb.GetCardRequest{CardId: cardID})
 	if err != nil {
 		writeGRPCError(w, h.log, err)
 		return
@@ -143,7 +143,7 @@ func (h *Handler) handleAdjustCardLimit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	card, err := h.client.AdjustCardLimit(r.Context(), &gatewaypb.AdjustCardLimitRequest{
+	card, err := h.client.AdjustCardLimit(clientContext(r), &gatewaypb.AdjustCardLimitRequest{
 		CardId:             cardID,
 		NewLimitMinorUnits: body.NewLimitMinorUnits,
 		Reason:             body.Reason,
@@ -167,7 +167,7 @@ func (h *Handler) handleListCards(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.client.ListCards(r.Context(), &gatewaypb.ListCardsRequest{TenantId: tenantID})
+	resp, err := h.client.ListCards(clientContext(r), &gatewaypb.ListCardsRequest{TenantId: tenantID})
 	if err != nil {
 		writeGRPCError(w, h.log, err)
 		return

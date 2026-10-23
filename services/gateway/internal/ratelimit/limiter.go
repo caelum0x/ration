@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/caelum0x/ration/services/gateway/internal/cardtenant"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
@@ -121,26 +122,42 @@ func (l *Limiter) Sweep(maxIdle time.Duration) {
 // here.
 const tenantIDFieldName = "tenant_id"
 
+// cardIDFieldName is the proto field name GetCard/AdjustCardLimit carry
+// instead of tenant_id — see keyFor's doc comment.
+const cardIDFieldName = "card_id"
+
 // keyFor derives the bucket key for a unary request: "tenant:<id>" if
 // the request message has a non-empty tenant_id field (every
-// tenant-scoped RPC in gateway.proto does), otherwise "peer:<addr>" so
-// requests that aren't yet tied to a tenant (e.g. GetCard/
-// AdjustCardLimit, which key off card_id) still can't bypass limiting
-// entirely from a single connection.
+// tenant-scoped RPC in gateway.proto does); failing that, if it carries
+// a card_id (GetCard/AdjustCardLimit) and cardResolver is non-nil, the
+// resolved owning tenant's "tenant:<id>" key — so a card-issuance outage
+// or an unresolvable card_id still falls back to "peer:<addr>" rather
+// than failing the request outright (rate-limit *degradation*, unlike
+// internal/tenantauth's authorization check, is allowed to be lossy:
+// worst case a noisy caller is rate-limited per-connection instead of
+// per-tenant, not that it bypasses limiting altogether).
 //
-// This is a deliberate, documented limitation: GetCard/AdjustCardLimit
-// are rate-limited per *caller address*, not per tenant that owns the
-// card, because resolving card_id -> tenant_id here would require a
-// ledger lookup on every call just to decide whether to allow it. If
-// that gap matters in practice, the fix is to add tenant_id to those
-// two request messages (a backward-compatible proto change), not to
-// make this interceptor call out to ledger-core.
-func keyFor(ctx context.Context, req any) string {
+// Before cardResolver existed, GetCard/AdjustCardLimit were *always*
+// rate-limited per *caller address* rather than per tenant that owns the
+// card, because resolving card_id -> tenant_id would have meant an extra
+// RPC on every call just to decide whether to allow it. internal/
+// cardtenant's cache keeps that cost low enough that paying it buys real
+// per-tenant limiting instead.
+func keyFor(ctx context.Context, cardResolver cardtenant.Resolver, req any) string {
 	if m, ok := req.(proto.Message); ok {
 		fd := m.ProtoReflect().Descriptor().Fields().ByName(tenantIDFieldName)
 		if fd != nil {
 			if tenantID := m.ProtoReflect().Get(fd).String(); tenantID != "" {
 				return "tenant:" + tenantID
+			}
+		}
+		if cardResolver != nil {
+			if cardFD := m.ProtoReflect().Descriptor().Fields().ByName(cardIDFieldName); cardFD != nil {
+				if cardID := m.ProtoReflect().Get(cardFD).String(); cardID != "" {
+					if tenantID, err := cardResolver.ResolveTenantID(ctx, cardID); err == nil && tenantID != "" {
+						return "tenant:" + tenantID
+					}
+				}
 			}
 		}
 	}
@@ -155,10 +172,12 @@ func peerAddr(ctx context.Context) string {
 }
 
 // UnaryServerInterceptor rejects a unary RPC with codes.ResourceExhausted
-// once its key's bucket (see keyFor) is empty.
-func UnaryServerInterceptor(l *Limiter) grpc.UnaryServerInterceptor {
+// once its key's bucket (see keyFor) is empty. cardResolver may be nil
+// (falls back to the pre-existing peer-address keying for GetCard/
+// AdjustCardLimit — see keyFor's doc comment).
+func UnaryServerInterceptor(l *Limiter, cardResolver cardtenant.Resolver) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		key := keyFor(ctx, req)
+		key := keyFor(ctx, cardResolver, req)
 		if !l.Allow(key) {
 			return nil, status.Errorf(codes.ResourceExhausted, "ratelimit: rate limit exceeded for %s", info.FullMethod)
 		}

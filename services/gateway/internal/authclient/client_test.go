@@ -63,7 +63,7 @@ func newTestClient(t *testing.T, server *fakeAuthServer) *Client {
 func TestClient_VerifyAPIKey_Valid(t *testing.T) {
 	client := newTestClient(t, &fakeAuthServer{apiKeyTenant: "tenant_1"})
 
-	tenantID, valid, _, err := client.VerifyAPIKey(context.Background(), "good-secret")
+	tenantID, valid, _, _, err := client.VerifyAPIKey(context.Background(), "good-secret")
 	if err != nil {
 		t.Fatalf("VerifyAPIKey() error = %v", err)
 	}
@@ -75,7 +75,7 @@ func TestClient_VerifyAPIKey_Valid(t *testing.T) {
 func TestClient_VerifyAPIKey_Invalid(t *testing.T) {
 	client := newTestClient(t, &fakeAuthServer{apiKeyTenant: "tenant_1"})
 
-	_, valid, reason, err := client.VerifyAPIKey(context.Background(), "wrong-secret")
+	_, valid, _, reason, err := client.VerifyAPIKey(context.Background(), "wrong-secret")
 	if err != nil {
 		t.Fatalf("VerifyAPIKey() error = %v", err)
 	}
@@ -87,7 +87,7 @@ func TestClient_VerifyAPIKey_Invalid(t *testing.T) {
 func TestClient_VerifyJWT_Valid(t *testing.T) {
 	client := newTestClient(t, &fakeAuthServer{jwtTenant: "tenant_2"})
 
-	tenantID, valid, _, err := client.VerifyJWT(context.Background(), "good-token")
+	tenantID, valid, _, _, err := client.VerifyJWT(context.Background(), "good-token")
 	if err != nil {
 		t.Fatalf("VerifyJWT() error = %v", err)
 	}
@@ -99,7 +99,7 @@ func TestClient_VerifyJWT_Valid(t *testing.T) {
 func TestClient_VerifyJWT_Invalid(t *testing.T) {
 	client := newTestClient(t, &fakeAuthServer{jwtTenant: "tenant_2"})
 
-	_, valid, reason, err := client.VerifyJWT(context.Background(), "wrong-token")
+	_, valid, _, reason, err := client.VerifyJWT(context.Background(), "wrong-token")
 	if err != nil {
 		t.Fatalf("VerifyJWT() error = %v", err)
 	}

@@ -45,7 +45,7 @@ func (h *Handler) handleStreamActivity(w http.ResponseWriter, r *http.Request) {
 
 	tenantID := r.URL.Query().Get("tenant_id")
 
-	stream, err := h.client.StreamActivity(r.Context(), &gatewaypb.StreamActivityRequest{TenantId: tenantID})
+	stream, err := h.client.StreamActivity(clientContext(r), &gatewaypb.StreamActivityRequest{TenantId: tenantID})
 	if err != nil {
 		writeGRPCError(w, h.log, err)
 		return

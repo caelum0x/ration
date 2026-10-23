@@ -23,13 +23,23 @@ const (
 const (
 	defaultLedgerAddr  = "localhost:7001"
 	defaultGatewayAddr = "localhost:7002"
+	defaultAuthAddr    = "localhost:7010"
 	defaultRPCTimeout  = 10 * time.Second
+
+	// operatorCredentialTTL bounds how long the CLI's one minted
+	// operator JWT (see internal/authclient.MintOperatorJWT) stays
+	// valid. A CLI invocation is always a single short-lived process, so
+	// this only needs to outlive the longest realistic command — well
+	// under jwtauth.MaxTTL (24h) — not the lifetime of a long-running
+	// service.
+	operatorCredentialTTL = time.Hour
 )
 
 // globalFlags holds the persistent flag values shared by every subcommand.
 type globalFlags struct {
 	ledgerAddr  string
 	gatewayAddr string
+	authAddr    string
 	timeout     time.Duration
 }
 
@@ -60,6 +70,9 @@ the resulting agent decisions — all live, from the terminal.`,
 	root.PersistentFlags().StringVar(&flags.gatewayAddr, "gateway-addr",
 		envOrDefault("GATEWAY_GRPC_ADDR", defaultGatewayAddr),
 		"gateway gRPC address (env GATEWAY_GRPC_ADDR)")
+	root.PersistentFlags().StringVar(&flags.authAddr, "auth-addr",
+		envOrDefault("AUTH_GRPC_ADDR", defaultAuthAddr),
+		"auth gRPC address, used to mint this invocation's operator credential (env AUTH_GRPC_ADDR)")
 	root.PersistentFlags().DurationVar(&flags.timeout, "timeout", defaultRPCTimeout,
 		"per-RPC timeout")
 

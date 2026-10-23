@@ -61,8 +61,9 @@ func main() {
 
 	gatewayAddr := envOr("GATEWAY_GRPC_ADDR", "localhost:7002")
 	ledgerAddr := envOr("LEDGER_CORE_ADDR", "localhost:7001")
+	authAddr := envOr("AUTH_GRPC_ADDR", "localhost:7010")
 
-	clients, err := client.Dial(gatewayAddr, ledgerAddr)
+	clients, err := client.Dial(ctx, gatewayAddr, ledgerAddr, authAddr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ration-tui: failed to set up gRPC clients: %v\n", err)
 		os.Exit(1)

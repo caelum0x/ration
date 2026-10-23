@@ -12,12 +12,22 @@ import (
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
 	"github.com/caelum0x/ration/pkg/telemetry"
+	"github.com/caelum0x/ration/services/tui/internal/authclient"
 	"google.golang.org/grpc"
 )
 
 // DialTimeout bounds how long Dial waits for the initial connection
 // handshake before giving up.
 const DialTimeout = 5 * time.Second
+
+// operatorCredentialTTL bounds how long the TUI's one minted operator
+// JWT (see internal/authclient.MintOperatorJWT) stays valid. The TUI is
+// a long-running dashboard (unlike a one-shot CLI invocation), so this
+// is deliberately close to jwtauth.MaxTTL (24h) rather than a short
+// default — a dashboard session dying mid-demo because its credential
+// silently expired would be a worse failure mode than a slightly
+// longer-lived token.
+const operatorCredentialTTL = 20 * time.Hour
 
 // Clients bundles the gateway and ledger-core gRPC clients the TUI talks
 // to. Both are plain generated stubs from pkg/pb — this type just owns the
@@ -31,12 +41,21 @@ type Clients struct {
 }
 
 // Dial connects to the gateway and ledger-core gRPC servers at the given
-// addresses. Plaintext by default (matching a local/demo deployment
-// behind a trusted network, consistent with the rest of this project's
+// addresses, minting a single operator-scoped JWT from auth at authAddr
+// first (see internal/authclient.MintOperatorJWT) and attaching it to
+// every subsequent gateway RPC — closing docs/THREAT-MODEL.md's "Known
+// gaps" item 1's own named residual TODO for the TUI's half of it.
+// ledger-core is NOT given this credential: gateway's internal/
+// tenantauth is what verifies it, ledger-core has no equivalent check
+// yet (docs/THREAT-MODEL.md item 1's "the biggest one" sub-gap, still
+// open).
+//
+// Plaintext by default (matching a local/demo deployment behind a
+// trusted network, consistent with the rest of this project's
 // mock-first Airwallex posture) — set TUI_MTLS_ENABLED=true (see
 // docs/SCALE-EXPANSION.md section 8, pkg/mtls, infra/dev-ca/) to
 // require mTLS against both peers instead.
-func Dial(gatewayAddr, ledgerAddr string) (*Clients, error) {
+func Dial(ctx context.Context, gatewayAddr, ledgerAddr, authAddr string) (*Clients, error) {
 	// Every RPC the TUI issues carries a trace (otelgrpc stats handler)
 	// and a correlation ID (minted fresh per RPC since the TUI has no
 	// single "command" root the way cli does) so a judge or operator can
@@ -55,11 +74,25 @@ func Dial(gatewayAddr, ledgerAddr string) (*Clients, error) {
 		return nil, fmt.Errorf("load mTLS config: %w", err)
 	}
 
+	auth, err := authclient.Dial(authAddr)
+	if err != nil {
+		return nil, fmt.Errorf("dial auth at %s: %w", authAddr, err)
+	}
+	defer auth.Close()
+	token, _, err := auth.MintOperatorJWT(ctx, "ration-tui", operatorCredentialTTL)
+	if err != nil {
+		return nil, fmt.Errorf("mint operator credential from auth at %s: %w", authAddr, err)
+	}
+	gatewayDialOpts := append([]grpc.DialOption{
+		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(token)),
+		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(token)),
+	}, commonDialOpts...)
+
 	gatewayDialOpt, err := mtlsCfg.WithDefaultServerName("gateway").DialOption()
 	if err != nil {
 		return nil, fmt.Errorf("mTLS dial option for gateway: %w", err)
 	}
-	gwConn, err := grpc.NewClient(gatewayAddr, append([]grpc.DialOption{gatewayDialOpt}, commonDialOpts...)...)
+	gwConn, err := grpc.NewClient(gatewayAddr, append([]grpc.DialOption{gatewayDialOpt}, gatewayDialOpts...)...)
 	if err != nil {
 		return nil, fmt.Errorf("dial gateway at %s: %w", gatewayAddr, err)
 	}

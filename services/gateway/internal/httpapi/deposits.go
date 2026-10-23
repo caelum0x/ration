@@ -36,7 +36,7 @@ func (h *Handler) handleSimulateDeposit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	resp, err := h.client.SimulateDeposit(r.Context(), &gatewaypb.SimulateDepositRequest{
+	resp, err := h.client.SimulateDeposit(clientContext(r), &gatewaypb.SimulateDepositRequest{
 		TenantId:         tenantID,
 		AmountMinorUnits: body.AmountMinorUnits,
 		ExpectedAtUnix:   body.ExpectedAtUnix,

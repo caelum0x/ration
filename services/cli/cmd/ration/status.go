@@ -49,7 +49,7 @@ agent decided.`,
 }
 
 func runStatus(cmd *cobra.Command, flags *globalFlags, tenantID string, decisionLimit int32) error {
-	c, err := dialClients(flags.ledgerAddr, flags.gatewayAddr)
+	c, err := dialClients(cmd.Context(), flags.ledgerAddr, flags.gatewayAddr, flags.authAddr)
 	if err != nil {
 		return err
 	}

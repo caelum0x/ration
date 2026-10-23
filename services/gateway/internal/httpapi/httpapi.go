@@ -35,6 +35,7 @@ import (
 
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 // GatewayClient is the generated gatewaypb.GatewayClient restated here
@@ -66,6 +67,43 @@ func NewHandler(client GatewayClient, log *slog.Logger) *Handler {
 		log = slog.Default()
 	}
 	return &Handler{client: client, log: log}
+}
+
+// forwardedCredentialHeaders are the two HTTP headers a REST caller may
+// present a credential under, mirroring internal/tenantauth's
+// apiKeyHeader/authorizationHeader gRPC metadata keys exactly (same
+// names on the wire, just HTTP headers instead of gRPC metadata) — so a
+// credential minted once (an API key or a bearer JWT, see
+// proto/auth.proto's IssueAPIKey/MintJWT) works identically whether the
+// caller is a gRPC client or an sdk/go/sdk/rust REST client hitting this
+// facade.
+const (
+	forwardedAPIKeyHeader        = "X-Api-Key"
+	forwardedAuthorizationHeader = "Authorization"
+)
+
+// clientContext builds the context every handler in this package uses
+// to call h.client: r's context (so request cancellation/timeout still
+// propagates), with whichever of the two credential headers r carries
+// forwarded onto the outgoing gRPC call's metadata.
+//
+// Without this, this REST facade's only RPCs would be the ones gateway's
+// own internal/tenantauth interceptor doesn't scope to a tenant — every
+// tenant-scoped RPC behind cfg.RequireTenantAuth would 401 for every
+// REST caller regardless of what credential it presented, because
+// cmd/gateway/main.go's loopback connection from this process back to
+// its own gRPC listener (selfConn) carries no credential of its own by
+// design: this facade is a translation layer, not a privileged bypass
+// of the same tenant-scoping every gRPC caller is held to.
+func clientContext(r *http.Request) context.Context {
+	ctx := r.Context()
+	if apiKey := r.Header.Get(forwardedAPIKeyHeader); apiKey != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-api-key", apiKey)
+	}
+	if authz := r.Header.Get(forwardedAuthorizationHeader); authz != "" {
+		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", authz)
+	}
+	return ctx
 }
 
 // Mux returns an http.Handler with every route in this package's doc
