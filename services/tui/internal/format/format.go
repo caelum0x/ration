@@ -9,6 +9,7 @@ import (
 	"time"
 
 	commonpb "github.com/caelum0x/ration/pkg/pb/common"
+	"github.com/caelum0x/ration/pkg/textsanitize"
 )
 
 // Money renders fixed-point minor units + an ISO 4217 currency code as a
@@ -122,4 +123,38 @@ func Truncate(s string, width int) string {
 		return string(r[:1])
 	}
 	return string(r[:width-1]) + "…"
+}
+
+// AgentActionLabel renders a common.AgentAction enum as a short label
+// used in the Decisions tab's ACTION column; the color is chosen
+// separately (see view.agentActionStyle) so this stays
+// presentation-only.
+func AgentActionLabel(a commonpb.AgentAction) string {
+	switch a {
+	case commonpb.AgentAction_AGENT_ACTION_ISSUE_CARD:
+		return "ISSUE_CARD"
+	case commonpb.AgentAction_AGENT_ACTION_ADJUST_LIMIT:
+		return "ADJUST_LIMIT"
+	case commonpb.AgentAction_AGENT_ACTION_RATION_BRIDGE:
+		return "RATION_BRIDGE"
+	case commonpb.AgentAction_AGENT_ACTION_RELEASE_HOLD:
+		return "RELEASE_HOLD"
+	case commonpb.AgentAction_AGENT_ACTION_DECLINE:
+		return "DECLINE"
+	case commonpb.AgentAction_AGENT_ACTION_NOTIFY:
+		return "NOTIFY"
+	default:
+		return "UNSPECIFIED"
+	}
+}
+
+// SanitizedCell strips terminal-control-character injection risk
+// (pkg/textsanitize, docs/THREAT-MODEL.md's terminal-escape-sequence
+// gap) from LLM-authored free text, then truncates it to width runes
+// for table-cell display. Applying sanitize before truncate (not the
+// other way around) matters: a truncated-but-unsanitized string could
+// still carry an unterminated escape sequence that bleeds into every
+// cell rendered after it.
+func SanitizedCell(s string, width int) string {
+	return Truncate(textsanitize.StripControlChars(s), width)
 }

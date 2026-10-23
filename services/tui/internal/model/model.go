@@ -27,15 +27,24 @@ const refreshInterval = 3 * time.Second
 // can't wedge the tick loop forever.
 const fetchTimeout = 4 * time.Second
 
+// decisionsPerTenant bounds how many of each tenant's most recent
+// agent decisions the Decisions tab fetches per refresh — this is a
+// live dashboard, not an audit export (see `ration status`'s CLI
+// equivalent, or `ration audit-check` for a full count comparison), so
+// a handful of the newest decisions per tenant is what the judge/
+// operator actually wants to see scroll by.
+const decisionsPerTenant = 20
+
 // refreshMsg carries the result of one polling cycle across tenants,
 // deposits, cards and balances. err is set (data left as-is) when the
 // ledger-core/gateway call itself fails, e.g. the service isn't up yet.
 type refreshMsg struct {
-	tenants  []*ledgerpb.Tenant
-	deposits []*ledgerpb.Deposit
-	cards    []*gatewaypb.Card
-	balances map[string]*ledgerpb.Balance
-	err      error
+	tenants   []*ledgerpb.Tenant
+	deposits  []*ledgerpb.Deposit
+	cards     []*gatewaypb.Card
+	balances  map[string]*ledgerpb.Balance
+	decisions []*ledgerpb.AgentDecision
+	err       error
 }
 
 type tickMsg time.Time
@@ -55,6 +64,7 @@ type Model struct {
 	deposits    []*ledgerpb.Deposit
 	cards       []*gatewaypb.Card
 	balances    map[string]*ledgerpb.Balance
+	decisions   []*ledgerpb.AgentDecision
 
 	activity []view.ActivityRow
 
@@ -141,11 +151,13 @@ func (m *Model) applyRefresh(msg refreshMsg) {
 	m.deposits = msg.deposits
 	m.cards = msg.cards
 	m.balances = msg.balances
+	m.decisions = msg.decisions
 	m.lastRefresh = time.Now()
 
 	m.cursor[TabTenants] = clampCursor(m.cursor[TabTenants], len(m.tenants))
 	m.cursor[TabDeposits] = clampCursor(m.cursor[TabDeposits], len(m.deposits))
 	m.cursor[TabCards] = clampCursor(m.cursor[TabCards], len(m.cards))
+	m.cursor[TabDecisions] = clampCursor(m.cursor[TabDecisions], len(m.decisions))
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -172,6 +184,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.activeTab = TabCards
 		return m, nil
 	case "4":
+		m.activeTab = TabDecisions
+		return m, nil
+	case "5":
 		m.activeTab = TabActivity
 		return m, nil
 
@@ -199,6 +214,8 @@ func (m Model) rowCount(t Tab) int {
 		return len(m.deposits)
 	case TabCards:
 		return len(m.cards)
+	case TabDecisions:
+		return len(m.decisions)
 	case TabActivity:
 		return len(m.activity)
 	default:
@@ -218,6 +235,8 @@ func (m Model) View() string {
 		body = view.Deposits(m.deposits, m.tenantNames, m.cursor[TabDeposits])
 	case TabCards:
 		body = view.Cards(m.cards, m.tenantNames, m.cursor[TabCards])
+	case TabDecisions:
+		body = view.Decisions(m.decisions, m.tenantNames, m.cursor[TabDecisions])
 	case TabActivity:
 		body = view.Activity(m.activity, m.cursor[TabActivity], m.activityFeedHeight())
 	}
@@ -254,7 +273,7 @@ func (m Model) footerLine() string {
 		refreshed = m.lastRefresh.Format("15:04:05")
 	}
 
-	hints := "tab/shift+tab or 1-4: switch tab  •  ↑/↓: scroll  •  r: refresh now  •  q: quit"
+	hints := "tab/shift+tab or 1-5: switch tab  •  ↑/↓: scroll  •  r: refresh now  •  q: quit"
 	line := fmt.Sprintf("%s   last refresh: %s   %s", status, refreshed, hints)
 
 	if m.err != nil {
@@ -280,6 +299,7 @@ func fetchAll(parent context.Context, c *client.Clients) tea.Cmd {
 
 		var deposits []*ledgerpb.Deposit
 		var cards []*gatewaypb.Card
+		var decisions []*ledgerpb.AgentDecision
 		balances := make(map[string]*ledgerpb.Balance, len(tenants))
 
 		for _, t := range tenants {
@@ -294,13 +314,19 @@ func fetchAll(parent context.Context, c *client.Clients) tea.Cmd {
 			if bal, err := c.GetBalance(ctx, id); err == nil {
 				balances[id] = bal
 			}
+			if dec, err := c.ListAgentDecisions(ctx, id, decisionsPerTenant); err == nil {
+				decisions = append(decisions, dec...)
+			}
 		}
 
+		sortDecisionsNewestFirst(decisions)
+
 		return refreshMsg{
-			tenants:  tenants,
-			deposits: deposits,
-			cards:    cards,
-			balances: balances,
+			tenants:   tenants,
+			deposits:  deposits,
+			cards:     cards,
+			balances:  balances,
+			decisions: decisions,
 		}
 	}
 }

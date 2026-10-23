@@ -13,7 +13,8 @@ func TestNextTabWraps(t *testing.T) {
 	}{
 		{TabTenants, TabDeposits},
 		{TabDeposits, TabCards},
-		{TabCards, TabActivity},
+		{TabCards, TabDecisions},
+		{TabDecisions, TabActivity},
 		{TabActivity, TabTenants},
 	}
 	for _, tc := range cases {
@@ -29,7 +30,8 @@ func TestPrevTabWraps(t *testing.T) {
 	}{
 		{TabDeposits, TabTenants},
 		{TabCards, TabDeposits},
-		{TabActivity, TabCards},
+		{TabDecisions, TabCards},
+		{TabActivity, TabDecisions},
 		{TabTenants, TabActivity},
 	}
 	for _, tc := range cases {

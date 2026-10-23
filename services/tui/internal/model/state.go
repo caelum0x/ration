@@ -1,6 +1,8 @@
 package model
 
 import (
+	"sort"
+
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
 	"github.com/caelum0x/ration/services/tui/internal/view"
 )
@@ -12,13 +14,14 @@ const (
 	TabTenants Tab = iota
 	TabDeposits
 	TabCards
+	TabDecisions
 	TabActivity
 )
 
 // tabCount must match the number of Tab constants above.
-const tabCount = 4
+const tabCount = 5
 
-var tabNames = [tabCount]string{"Tenants", "Deposits", "Cards", "Activity"}
+var tabNames = [tabCount]string{"Tenants", "Deposits", "Cards", "Decisions", "Activity"}
 
 // String renders the tab's display name, used by the tab bar.
 func (t Tab) String() string {
@@ -92,6 +95,21 @@ func buildTenantNames(tenants []*ledgerpb.Tenant) map[string]string {
 		names[t.GetId()] = t.GetName()
 	}
 	return names
+}
+
+// sortDecisionsNewestFirst sorts decisions in place by CreatedAtUnix,
+// newest first. model.fetchAll fetches each tenant's decisions in its
+// own ListAgentDecisions call (already newest-first per tenant, see
+// ledger-core's query), then concatenates across tenants — which, with
+// more than one tenant, is no longer globally ordered by time. Sorting
+// once after the fan-out is simpler and more auditable than inventing
+// a cross-tenant "list every tenant's decisions" RPC on ledger-core
+// just for this dashboard. Pure over an already-fetched slice, so it's
+// unit tested directly.
+func sortDecisionsNewestFirst(decisions []*ledgerpb.AgentDecision) {
+	sort.SliceStable(decisions, func(i, j int) bool {
+		return decisions[i].GetCreatedAtUnix() > decisions[j].GetCreatedAtUnix()
+	})
 }
 
 // resolveTenantName looks up a tenant's display name, falling back to the

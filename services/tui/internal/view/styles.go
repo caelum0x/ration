@@ -71,6 +71,24 @@ func depositStatusStyle(label string) lipgloss.Style {
 	}
 }
 
+// agentActionStyle maps an agent-decision action label (see
+// format.AgentActionLabel) to a color-coded style, so the Decisions
+// tab's granted/declined outcomes are visually distinct at a glance —
+// the same purpose cardStatusStyle/depositStatusStyle serve for their
+// own tabs.
+func agentActionStyle(label string) lipgloss.Style {
+	switch label {
+	case "RATION_BRIDGE", "ISSUE_CARD", "ADJUST_LIMIT", "RELEASE_HOLD":
+		return lipgloss.NewStyle().Foreground(colorGood).Bold(true)
+	case "DECLINE":
+		return lipgloss.NewStyle().Foreground(colorBad).Bold(true)
+	case "NOTIFY":
+		return lipgloss.NewStyle().Foreground(colorInfo)
+	default:
+		return lipgloss.NewStyle().Foreground(colorMuted)
+	}
+}
+
 // activityKindStyle color-codes the activity feed by event kind so the
 // live stream is scannable without reading every line.
 func activityKindStyle(kind string) lipgloss.Style {

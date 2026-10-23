@@ -4,15 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"text/tabwriter"
 	"time"
-	"unicode"
 
 	"github.com/caelum0x/ration/services/cli/internal/moneyfmt"
 
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
+	"github.com/caelum0x/ration/pkg/textsanitize"
 	"github.com/spf13/cobra"
 )
 
@@ -49,7 +48,7 @@ agent decided.`,
 }
 
 func runStatus(cmd *cobra.Command, flags *globalFlags, tenantID string, decisionLimit int32) error {
-	c, err := dialClients(cmd.Context(), flags.ledgerAddr, flags.gatewayAddr, flags.authAddr)
+	c, err := dialClients(cmd.Context(), flags.ledgerAddr, flags.gatewayAddr, flags.authAddr, flags.auditAddr)
 	if err != nil {
 		return err
 	}
@@ -206,20 +205,13 @@ func truncate(s string, max int) string {
 // chain could, in principle, inject ANSI escapes into an operator's
 // terminal (cursor manipulation, hidden text)."
 //
-// Ordinary whitespace (tab, newline, carriage return) is preserved since
-// the tabwriter and terminal both rely on it for layout; every other
-// control character (0x00-0x1F, 0x7F, and the UTF-8-encoded C1 range
-// U+0080-U+009F) is dropped.
+// A thin wrapper over pkg/textsanitize.StripControlChars (extracted
+// there so services/tui's "Agent Decisions" tab, which renders this
+// same LLM-authored text, applies the identical protection) kept as
+// its own named function here so this package's own tests don't need
+// to change.
 func sanitizeControlChars(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '\t' || r == '\n' || r == '\r' {
-			return r
-		}
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, s)
+	return textsanitize.StripControlChars(s)
 }
 
 func newTabWriter(out io.Writer) *tabwriter.Writer {

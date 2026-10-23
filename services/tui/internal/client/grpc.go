@@ -180,6 +180,20 @@ func (c *Clients) GetBalance(ctx context.Context, tenantID string) (*ledgerpb.Ba
 	return bal, nil
 }
 
+// ListAgentDecisions fetches a tenant's most recent agent decisions
+// (newest first, bounded by limit) from ledger-core — the data behind
+// the Decisions tab (internal/view.Decisions): every rationale,
+// policy_snapshot_json and chosen action the agent's loop has recorded
+// for this tenant, not just the balance/card state its decisions acted
+// on.
+func (c *Clients) ListAgentDecisions(ctx context.Context, tenantID string, limit int32) ([]*ledgerpb.AgentDecision, error) {
+	resp, err := c.Ledger.ListAgentDecisions(ctx, &ledgerpb.ListAgentDecisionsRequest{TenantId: tenantID, Limit: limit})
+	if err != nil {
+		return nil, fmt.Errorf("list agent decisions for tenant %s: %w", tenantID, err)
+	}
+	return resp.GetDecisions(), nil
+}
+
 // StreamActivity opens the gateway's live activity feed for all tenants
 // (an empty tenant_id, per gateway.proto, means "all tenants"). The caller
 // owns the returned stream's lifecycle and should Recv() in a loop until
