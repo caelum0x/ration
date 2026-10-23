@@ -312,17 +312,34 @@ func (s *Service) recordDecision(ctx context.Context, tenantID, reason string, a
 	return nil
 }
 
-// findRelevantLateDeposit returns the tenant's oldest currently-LATE
+// findRelevantLateDeposit returns the tenant's oldest currently-late
 // deposit — the one that's actually overdue and that bridge funding is
 // standing in for. Returns nil (not an error) if there is none.
+//
+// "Late" here is computed time-based (ReceivedAtUnix == 0 &&
+// ExpectedAtUnix < s.now()) rather than by trusting GetStatus() ==
+// DEPOSIT_STATUS_LATE — this is a deliberate fix for a confirmed,
+// previously-documented bug (see docs/RUNBOOK.md's "the agent loop is
+// granting $0 bridges" entry, reason 3): nothing on ledger-core's write
+// path (deposit::insert sets Expected, deposit::mark_received sets
+// Received — see services/ledger-core/src/deposit.rs) ever writes
+// DepositStatus::Late to a row, so filtering on that status could never
+// match a single real deposit, and RationBridgeFunding would decline
+// every genuinely late deposit with "no late deposit on file for this
+// tenant" despite ledger-core's own ListLateDeposits RPC (deposit::
+// list_late) correctly identifying the exact same deposit as late via
+// this identical time-based definition. Matching that definition here,
+// instead of waiting on a currently-unplanned status-projection change
+// on ledger-core's side, closes the gap with no proto/wire change.
 func (s *Service) findRelevantLateDeposit(ctx context.Context, tenantID string) (*ledgerpb.Deposit, error) {
 	deposits, err := s.ledger.ListDeposits(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
+	nowUnix := s.now().Unix()
 	var oldest *ledgerpb.Deposit
 	for _, d := range deposits {
-		if d.GetStatus() != commonpb.DepositStatus_DEPOSIT_STATUS_LATE {
+		if d.GetReceivedAtUnix() != 0 || d.GetExpectedAtUnix() >= nowUnix {
 			continue
 		}
 		if oldest == nil || d.GetExpectedAtUnix() < oldest.GetExpectedAtUnix() {
