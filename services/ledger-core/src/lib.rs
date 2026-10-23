@@ -18,6 +18,7 @@ pub mod mtls;
 pub mod telemetry;
 pub mod tenant;
 pub mod tenantauth;
+pub mod wal_crypto;
 pub mod wal_ffi;
 
 pub mod grpc;

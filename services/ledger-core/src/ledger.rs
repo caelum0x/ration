@@ -25,6 +25,7 @@ use crate::deposit::{DepositRecord, DepositStatus};
 use crate::error::LedgerError;
 use crate::money::Money;
 use crate::tenant::TenantRecord;
+use crate::wal_crypto;
 use crate::wal_ffi::{self, Wal};
 use crate::{agent_decision, deposit, tenant};
 
@@ -150,6 +151,12 @@ pub fn now_unix() -> i64 {
 struct LedgerInner {
     wal: Wal,
     db: Connection,
+    /// When `Some`, every WAL frame this process appends is encrypted
+    /// first (`append_and_commit`) — see `crate::wal_crypto`'s module
+    /// doc comment for exactly why this is the right boundary.
+    /// `None` (the default — see `Ledger::open`) preserves this
+    /// crate's original plaintext-WAL behavior exactly.
+    crypto: Option<wal_crypto::Key>,
 }
 
 /// The ledger: a WAL-backed, SQLite-indexed store of tenants, deposits,
@@ -172,6 +179,25 @@ impl Ledger {
     /// before the WAL is even opened for further appends. Returns the
     /// number of frames replayed.
     pub fn open(wal_path: &Path, db_path: &Path) -> Result<(Self, u64), LedgerError> {
+        Self::open_with_encryption(wal_path, db_path, None)
+    }
+
+    /// Like [`Ledger::open`], but with the WAL encrypted at rest when
+    /// `crypto` is `Some` — see `crate::wal_crypto`'s module doc
+    /// comment. `crypto` must be the SAME key (or `None`) that wrote
+    /// whatever already exists at `wal_path`: WAL recovery decrypts
+    /// every existing frame with it before replaying, so mismatching
+    /// `crypto` against an existing WAL fails recovery loudly
+    /// (`wal_crypto::Error::Decrypt`/`Truncated`) rather than silently
+    /// misreading it — this is not a live key-rotation or
+    /// enable-encryption-on-an-existing-WAL migration path; see
+    /// `main.rs`'s wiring and `docs/RUNBOOK.md` for that limitation
+    /// spelled out for an operator.
+    pub fn open_with_encryption(
+        wal_path: &Path,
+        db_path: &Path,
+        crypto: Option<wal_crypto::Key>,
+    ) -> Result<(Self, u64), LedgerError> {
         if let Some(parent) = db_path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)
@@ -180,25 +206,30 @@ impl Ledger {
         }
         let db = Connection::open(db_path)?;
         init_schema(&db)?;
-        let replayed = replay_wal_into_index(wal_path, &db)?;
+        let replayed = replay_wal_into_index(wal_path, &db, crypto.as_ref())?;
 
         let wal = Wal::open(wal_path)?;
         let ledger = Ledger {
-            inner: Mutex::new(LedgerInner { wal, db }),
+            inner: Mutex::new(LedgerInner { wal, db, crypto }),
         };
         Ok((ledger, replayed))
     }
 
     /// In-memory variant used by tests that don't need a real SQLite
-    /// file on disk.
+    /// file on disk. Never encrypted — see [`Ledger::open_with_encryption`]
+    /// for the file-backed, optionally-encrypted equivalent.
     pub fn open_with_memory_db(wal_path: &Path) -> Result<(Self, u64), LedgerError> {
         let db = Connection::open_in_memory()?;
         init_schema(&db)?;
-        let replayed = replay_wal_into_index(wal_path, &db)?;
+        let replayed = replay_wal_into_index(wal_path, &db, None)?;
 
         let wal = Wal::open(wal_path)?;
         let ledger = Ledger {
-            inner: Mutex::new(LedgerInner { wal, db }),
+            inner: Mutex::new(LedgerInner {
+                wal,
+                db,
+                crypto: None,
+            }),
         };
         Ok((ledger, replayed))
     }
@@ -714,8 +745,21 @@ fn append_and_commit(
     event: &WalEvent,
     apply: impl FnOnce(&Connection) -> rusqlite::Result<()>,
 ) -> Result<(), LedgerError> {
-    let bytes = serde_json::to_vec(event)
+    let plaintext = serde_json::to_vec(event)
         .map_err(|e| LedgerError::Storage(format!("encoding WAL event: {e}")))?;
+    // Encrypt the fully-serialized event before it ever reaches
+    // wal_ffi::Wal::append — see crate::wal_crypto's module doc
+    // comment for why this exact boundary is where encryption belongs.
+    // wal_ffi's own interface already treats a payload as an opaque
+    // &[u8]; this is simply choosing to make those bytes ciphertext
+    // when encryption is configured, with zero changes to the C WAL's
+    // frame format, CRC, or recovery logic.
+    let bytes = match &inner.crypto {
+        Some(key) => key
+            .encrypt(&plaintext)
+            .map_err(|e| LedgerError::Storage(format!("encrypting WAL event: {e}")))?,
+        None => plaintext,
+    };
     inner.wal.append(&bytes)?;
 
     let tx = inner.db.unchecked_transaction()?;
@@ -808,14 +852,38 @@ fn apply_replayed_event(db: &Connection, event: WalEvent) -> Result<(), LedgerEr
 /// returned directly, taking priority over the generic
 /// `WalError::Invalid` ("callback aborted") that `wal_ffi::recover`
 /// would otherwise report for the same abort.
-fn replay_wal_into_index(wal_path: &Path, db: &Connection) -> Result<u64, LedgerError> {
+fn replay_wal_into_index(
+    wal_path: &Path,
+    db: &Connection,
+    crypto: Option<&wal_crypto::Key>,
+) -> Result<u64, LedgerError> {
     let mut first_error: Option<LedgerError> = None;
 
     let result = wal_ffi::recover(wal_path, |bytes| {
         if first_error.is_some() {
             return false;
         }
-        match serde_json::from_slice::<WalEvent>(bytes) {
+        // Decrypt first (a no-op pass-through when crypto is None) —
+        // see append_and_commit's matching encrypt step. A frame
+        // written under a different key (or written plaintext while
+        // crypto is now configured, or vice versa) fails here as a
+        // corrupt-payload error, loudly, rather than ever silently
+        // misreading it — see Ledger::open_with_encryption's doc
+        // comment on why this is not a live migration path.
+        let decrypted: std::borrow::Cow<'_, [u8]> = match crypto {
+            Some(key) => match key.decrypt(bytes) {
+                Ok(plaintext) => std::borrow::Cow::Owned(plaintext),
+                Err(e) => {
+                    first_error = Some(LedgerError::Storage(format!(
+                        "failed to decrypt WAL frame during recovery (wrong RATION_LEDGER_ENCRYPTION_KEY, or this WAL was written without one configured): {e}"
+                    )));
+                    return false;
+                }
+            },
+            None => std::borrow::Cow::Borrowed(bytes),
+        };
+
+        match serde_json::from_slice::<WalEvent>(&decrypted) {
             Ok(event) => match apply_replayed_event(db, event) {
                 Ok(()) => true,
                 Err(e) => {
@@ -1194,6 +1262,124 @@ mod tests {
         assert_eq!(
             balance.available_minor_units, 1000,
             "balance must be unchanged"
+        );
+    }
+
+    fn temp_db_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir();
+        dir.join(format!(
+            "ration-ledger-test-{name}-{}-{}.db",
+            std::process::id(),
+            Uuid::new_v4()
+        ))
+    }
+
+    fn test_encryption_key() -> wal_crypto::Key {
+        wal_crypto::Key::from_base64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap()
+    }
+
+    /// Proves crate::wal_crypto's module doc comment claim end to
+    /// end, not just at the wal_crypto unit-test level: a ledger
+    /// opened with an encryption key writes a WAL that is NOT valid
+    /// JSON on disk (i.e. is actually ciphertext, not plaintext
+    /// merely tagged as encrypted), and the exact same ledger data —
+    /// a real tenant, a real ApplyEntry credit — survives a full
+    /// close-and-reopen (simulating a process restart) with that same
+    /// key, recovering to the identical balance.
+    #[test]
+    fn encrypted_wal_round_trips_across_a_simulated_restart() {
+        let wal_path = temp_wal_path("encrypted");
+        let db_path = temp_db_path("encrypted");
+        let key = test_encryption_key();
+
+        let tenant_id = {
+            let (ledger, replayed) =
+                Ledger::open_with_encryption(&wal_path, &db_path, Some(key.clone())).unwrap();
+            assert_eq!(replayed, 0, "fresh WAL has nothing to replay");
+
+            let t = ledger
+                .create_tenant("Acme Encrypted".into(), "USD".into(), 500)
+                .unwrap();
+            ledger
+                .apply_entry(
+                    t.id.clone(),
+                    LedgerEntryType::Credit,
+                    Money::new(10_000, "USD").unwrap(),
+                    "deposit".into(),
+                    "enc-key-1".into(),
+                    "".into(),
+                )
+                .unwrap();
+            t.id
+            // `ledger` (and the WAL file handle it owns) is dropped
+            // here, simulating process shutdown.
+        };
+
+        // The WAL file on disk must not be plaintext JSON — if it
+        // were, this would be a no-op "encryption" that only pretends
+        // to protect anything. WalEvent::TenantCreated's own tenant
+        // name is a deliberately distinctive string to search for.
+        let raw_wal_bytes = std::fs::read(&wal_path).unwrap();
+        assert!(
+            !raw_wal_bytes
+                .windows(b"Acme Encrypted".len())
+                .any(|w| w == b"Acme Encrypted"),
+            "WAL file must not contain the tenant name in plaintext when encryption is enabled"
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&raw_wal_bytes).is_err(),
+            "WAL file bytes must not parse as JSON when encryption is enabled (that would mean encryption did nothing)"
+        );
+
+        // Reopen with the SAME key — recovery must decrypt every frame
+        // and rebuild the identical SQLite index from them.
+        let (ledger, replayed) =
+            Ledger::open_with_encryption(&wal_path, &db_path, Some(key)).unwrap();
+        assert_eq!(replayed, 2, "both WAL frames (TenantCreated, EntryApplied) must replay");
+
+        let (balance, currency) = ledger.get_balance(&tenant_id).unwrap();
+        assert_eq!(balance.available_minor_units, 10_000);
+        assert_eq!(currency, "USD");
+
+        let tenant = ledger.get_tenant(&tenant_id).unwrap();
+        assert_eq!(tenant.name, "Acme Encrypted");
+    }
+
+    /// Reopening an encrypted WAL with the WRONG key (or with
+    /// encryption now disabled) must fail recovery loudly, never
+    /// silently produce corrupted or empty state — see
+    /// Ledger::open_with_encryption's own doc comment on why this is
+    /// not a live key-rotation path.
+    #[test]
+    fn reopening_encrypted_wal_with_wrong_key_fails_recovery() {
+        let wal_path = temp_wal_path("encrypted-wrong-key");
+        let db_path = temp_db_path("encrypted-wrong-key");
+
+        {
+            let (ledger, _) =
+                Ledger::open_with_encryption(&wal_path, &db_path, Some(test_encryption_key()))
+                    .unwrap();
+            ledger
+                .create_tenant("Wrong Key Co".into(), "USD".into(), 0)
+                .unwrap();
+        }
+
+        let wrong_key =
+            wal_crypto::Key::from_base64("AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
+        let db_path_2 = temp_db_path("encrypted-wrong-key-2");
+        let reopened = Ledger::open_with_encryption(&wal_path, &db_path_2, Some(wrong_key));
+        assert!(
+            reopened.is_err(),
+            "recovery with the wrong key must fail, not silently succeed with corrupted/missing data"
+        );
+
+        // Also fails when encryption is disabled entirely against an
+        // encrypted WAL — the raw ciphertext bytes are not valid JSON.
+        let db_path_3 = temp_db_path("encrypted-wrong-key-3");
+        let reopened_plain = Ledger::open_with_encryption(&wal_path, &db_path_3, None);
+        assert!(
+            reopened_plain.is_err(),
+            "recovery with encryption disabled against an encrypted WAL must fail, not silently succeed"
         );
     }
 }

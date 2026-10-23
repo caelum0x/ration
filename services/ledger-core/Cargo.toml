@@ -49,6 +49,14 @@ tower = "0.4"
 # exposition format — Prometheus's text format (TextEncoder, always
 # available) is all services/ledger-core/src/metrics.rs uses.
 prometheus = { version = "0.13", default-features = false }
+# AES-256-GCM envelope encryption for src/wal_crypto.rs (docs/
+# THREAT-MODEL.md's "Known gaps" #6: the WAL and SQLite index are
+# fully plaintext on local disk). Pure Rust (no OpenSSL/libsodium
+# linking), from the audited RustCrypto project — the same family
+# already in this dependency tree transitively via rustls (see
+# tonic's "tls" feature above).
+aes-gcm = "0.10"
+base64 = "0.22"
 
 [build-dependencies]
 cc = "1"

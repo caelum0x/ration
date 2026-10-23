@@ -11,6 +11,7 @@ use ledger_core::mtls;
 use ledger_core::pb::ration::ledger::v1::ledger_core_server::LedgerCoreServer;
 use ledger_core::telemetry::TracedService;
 use ledger_core::tenantauth;
+use ledger_core::wal_crypto;
 
 /// Tags every span, trace resource attribute, and log line this process
 /// emits — mirrors the Go services' `serviceName`/`serviceVersion`
@@ -67,12 +68,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ledger_addr = env_or("LEDGER_CORE_ADDR", "localhost:7001");
     let addr: SocketAddr = resolve_bind_addr(&ledger_addr)?;
 
+    // Encryption at rest (docs/THREAT-MODEL.md's "Known gaps" #6, see
+    // ledger_core::wal_crypto's module doc comment) is opt-in and
+    // disabled by default — RATION_LEDGER_ENCRYPTION_KEY unset means
+    // wal_crypto::Key::from_env() returns None, and every WAL frame is
+    // written/read exactly as before this feature existed. This is
+    // NOT a live migration path: setting it against an EXISTING
+    // plaintext WAL fails recovery (every frame fails to decrypt), and
+    // changing it against an existing encrypted WAL fails the same
+    // way — start from a fresh RATION_LEDGER_WAL_PATH/
+    // RATION_LEDGER_DB_PATH when first enabling or ever rotating this
+    // key (see docs/RUNBOOK.md).
+    let encryption_key = wal_crypto::Key::from_env()?;
+    tracing::info!(
+        encryption_at_rest_enabled = encryption_key.is_some(),
+        "ledger-core encryption-at-rest configured"
+    );
+
     tracing::info!(
         ?wal_path,
         ?db_path,
         "opening ledger (recovering WAL before accepting RPCs)"
     );
-    let (ledger, replayed) = Ledger::open(&wal_path, &db_path)?;
+    let (ledger, replayed) = Ledger::open_with_encryption(&wal_path, &db_path, encryption_key)?;
     tracing::info!(replayed_events = replayed, "WAL recovery complete");
 
     // mTLS (see docs/SCALE-EXPANSION.md section 8, ledger_core::mtls,
