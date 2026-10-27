@@ -99,6 +99,52 @@ never became ready to accept connections.
 
 ---
 
+## "I want to enable encryption at rest" / "ledger-core won't decrypt its own data after a restart"
+
+**What `RATION_LEDGER_ENCRYPTION_KEY` actually encrypts:** one base64-
+encoded 32-byte AES-256 key (`services/ledger-core/src/wal_crypto.rs`),
+used for two independent things once set:
+
+1. Every frame `ledger-core` appends to its own write-ahead log
+   (`crate::ledger`'s `append_and_commit`/`replay_wal_into_index`) —
+   the durable source of truth.
+2. The free-text columns in its SQLite index that aren't already
+   covered by `tenant_id`/amounts/timestamps/enum filters:
+   `deposit.external_ref`, `ledger_entries.reference`/`memo`, and
+   `agent_decisions.trigger`/`rationale`/`policy_snapshot_json`
+   (`crate::deposit`, `crate::agent_decision`, the `ledger_entries`
+   functions in `crate::ledger`, all going through `wal_crypto::
+   encrypt_opt`/`decrypt_opt`). `tenant_id`, ids, amounts, timestamps,
+   and status/type enums are deliberately left unencrypted — every
+   query in the crate filters or sorts on one of those, and AES-GCM
+   ciphertext can't support that.
+
+**Enabling this is NOT a live migration.** Set
+`RATION_LEDGER_ENCRYPTION_KEY` only against a **fresh**
+`RATION_LEDGER_WAL_PATH`/`RATION_LEDGER_DB_PATH` pair (or a pair that
+was always written with this exact key). Flipping it on against an
+existing plaintext WAL/db, or changing the key against an existing
+encrypted one, makes `Ledger::open_with_encryption` fail recovery
+loudly (`wal_crypto::Error::Decrypt`/`Truncated`,
+`LedgerError::Storage`/`LedgerError::Wal`) rather than silently
+misreading or corrupting data — that is the intended, safe failure
+mode, not a bug to work around. To actually rotate the key: stop
+`ledger-core`, start a brand-new WAL/db path under the new key, and
+replay/migrate application-level (there is no in-place re-encrypt
+tool for either the WAL or the SQLite columns as of this writing).
+
+Generate a key: `openssl rand -base64 32` (must decode to exactly 32
+bytes — `wal_crypto::Error::WrongKeyLength` rejects anything else at
+startup, immediately, not on first write).
+
+Disabled by default (env var unset) — every other security control in
+this project uses the same opt-in posture for anything that changes an
+on-disk format. See `infra/terraform/modules/service` for this
+project's existing Secrets Manager wiring pattern a real deployment
+would use to provision this value instead of a bare env var.
+
+---
+
 ## "a tenant's reserve floor shows negative headroom"
 
 **Symptom:** `ration status --tenant <id>` (or the TUI's tenants tab)

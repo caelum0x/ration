@@ -55,3 +55,10 @@ services/wal/fuzz/timeout-*
 # built on demand into a scratch workdir — never commit the compiled
 # binary if someone builds it at the module root by hand.
 services/gateway/chaosload
+.gstack/
+
+# Generated hackathon-submission demo video/recording (scripts/
+# record-demo.sh + asciinema/agg/ffmpeg) — a real build artifact meant
+# for the owner to upload to YouTube/Vimeo and link in the HackerEarth
+# submission form, not source, so it's never committed here.
+demo-video/
