@@ -76,6 +76,7 @@ services:
     depends_on:
       - otel-collector
       - audit-log
+      - auth
     ports:
       - "7001:7001"
       - "9099:9099"
@@ -91,6 +92,21 @@ services:
       # services/ledger-core/src/audit_mirror.rs,
       # docs/SCALE-EXPANSION.md section 8.
       AUDIT_LOG_ADDR: "audit-log:7003"
+      # REQUIRED — without this, src/main.rs's `env_or("AUTH_GRPC_ADDR",
+      # "localhost:7010")` default resolves to THIS container's own
+      # loopback (no listener there), not the `auth` service's: since
+      # RATION_LEDGER_REQUIRE_TENANT_AUTH defaults to true (see
+      # src/tenantauth.rs), ledger-core would start (the channel is
+      # lazy — see src/authclient.rs's doc comment) but every real
+      # tenant-scoped RPC would then fail its credential check against
+      # an unreachable address. `scripts/run-demo.sh` doesn't hit this
+      # because every service there runs on the same host, where
+      # `localhost:7010` really is `auth`'s bind address — only this
+      # compose network, where each service is its own namespace, needs
+      # the explicit service-name override every other direct
+      # ledger-core caller below (tenant-registry, card-issuance,
+      # webhook-ingestion) already has for `LEDGER_CORE_ADDR`.
+      AUTH_GRPC_ADDR: "auth:7010"
     volumes:
       - ledger_core_data:/data
 
