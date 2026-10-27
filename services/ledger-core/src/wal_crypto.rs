@@ -31,7 +31,25 @@
 //!    ids are deliberately left unencrypted: they are the WHERE/ORDER
 //!    BY/JOIN columns every query in this crate already filters or
 //!    sorts on, and AES-GCM ciphertext is neither order-preserving nor
-//!    equality-stable in a way SQL could use anyway.
+//!    equality-stable in a way SQL could use anyway. `encrypt_opt`/
+//!    `decrypt_opt` below are the shared read/write helpers every one
+//!    of those columns' repository functions goes through.
+//!
+//!    `ledger_entries.reference` is the one column in this list a real
+//!    query filters on (`crate::ledger`'s bridge-hold-release matching:
+//!    a `LIKE 'bridge:<deposit_id>:%'` prefix match plus an exact-match
+//!    "already released?" check) — exactly the case the paragraph above
+//!    says ciphertext can't support. Rather than leave `reference`
+//!    unencrypted as a special case, that one lookup was moved out of
+//!    SQL: it now fetches every HOLD/RELEASE row for the tenant (already
+//!    filtered server-side on the unencrypted `tenant_id`/`entry_type`
+//!    columns, which the existing index covers), decrypts `reference`
+//!    for each via `decrypt_opt`, and does the prefix/equality match in
+//!    Rust — see `list_outstanding_bridge_holds_for_deposit`. At this
+//!    project's real scale (a handful of holds per tenant) this is not a
+//!    meaningful cost, and it means `reference` is protected with the
+//!    same posture as every other listed column instead of being quietly
+//!    exempted.
 //!
 //! Disabled by default (`Key::from_env` returns `None` when
 //! `RATION_LEDGER_ENCRYPTION_KEY` is unset) — the same opt-in posture
@@ -88,12 +106,32 @@ pub struct Key {
 
 impl Key {
     /// Loads a [`Key`] from `RATION_LEDGER_ENCRYPTION_KEY`, or returns
-    /// `Ok(None)` when that env var is unset — encryption is simply
-    /// disabled, not an error, matching every other opt-in security
-    /// control in this project (see this module's doc comment).
+    /// `Ok(None)` when that env var is unset OR set to an empty string —
+    /// encryption is simply disabled, not an error, matching every other
+    /// opt-in security control in this project (see this module's doc
+    /// comment) and, specifically, `main.rs`'s own `auth_grpc_addr`
+    /// handling one function away (`if auth_grpc_addr.is_empty() {
+    /// AuthVerifier::disabled() }`).
+    ///
+    /// The empty-string case matters in practice, not just in theory:
+    /// `scripts/run-demo.sh`'s `load_env_file` falls back to
+    /// `.env.example` for any var not already set in the real
+    /// environment or `.env`, and `.env.example` documents this key as
+    /// `RATION_LEDGER_ENCRYPTION_KEY=` (present, deliberately blank, the
+    /// same convention used for `AUDIT_LOG_ADDR=` and every other
+    /// optional value in that file) — which *sets* the var to `""`
+    /// rather than leaving it absent. Before this fix, that made
+    /// `Self::from_base64("")` run with a zero-byte input and fail with
+    /// `Error::WrongKeyLength(0)`, which `main.rs` propagates as a hard
+    /// startup error — meaning `scripts/run-demo.sh` from a totally
+    /// clean checkout, with no `.env` and no env var ever set by hand,
+    /// could not start ledger-core at all. Found and fixed verifying
+    /// round 2's SQLite column-encryption work against the real demo
+    /// stack, the same way round 1's bugs were found.
     pub fn from_env() -> Result<Option<Self>, Error> {
         match std::env::var(ENV_KEY) {
             Err(_) => Ok(None),
+            Ok(encoded) if encoded.is_empty() => Ok(None),
             Ok(encoded) => Self::from_base64(&encoded).map(Some),
         }
     }
@@ -165,6 +203,48 @@ impl Key {
     }
 }
 
+/// Encrypts `plaintext` with [`Key::encrypt_text`] when `crypto` is
+/// `Some`, otherwise returns it unchanged — the single helper every
+/// SQLite free-text column write (`crate::deposit`, `crate::
+/// agent_decision`, the `ledger_entries` functions in `crate::ledger`)
+/// goes through, so column-level encryption is opt-in in exactly the
+/// same way WAL encryption already is (see this module's doc comment,
+/// point 2): a `None` key is a no-op, never an error.
+pub fn encrypt_opt(crypto: Option<&Key>, plaintext: &str) -> Result<String, Error> {
+    match crypto {
+        Some(key) => key.encrypt_text(plaintext),
+        None => Ok(plaintext.to_string()),
+    }
+}
+
+/// Decrypts `stored` with [`Key::decrypt_text`] when `crypto` is `Some`,
+/// otherwise returns it unchanged — the read-side counterpart of
+/// [`encrypt_opt`]. `crypto` must be the same key (or `None`) used to
+/// write `stored`, matching this crate's existing "not a live migration
+/// path" rule for the WAL (see `Ledger::open_with_encryption`'s doc
+/// comment) — a mismatch fails loudly via [`Error::Decrypt`] rather than
+/// silently returning ciphertext or garbage.
+pub fn decrypt_opt(crypto: Option<&Key>, stored: &str) -> Result<String, Error> {
+    match crypto {
+        Some(key) => key.decrypt_text(stored),
+        None => Ok(stored.to_string()),
+    }
+}
+
+/// Lets `encrypt_opt`/`decrypt_opt` be used directly with `?` inside
+/// functions returning `rusqlite::Result<_>` (every repository function
+/// in `crate::deposit`/`crate::agent_decision`/`crate::ledger` already
+/// does) without each call site needing its own `.map_err(...)` — a
+/// crypto failure becomes a real, surfaced SQLite-layer error
+/// (`rusqlite::Error::ToSqlConversionFailure`, the variant rusqlite
+/// itself defines for "a value couldn't be converted for storage/
+/// retrieval"), never a silently-dropped one.
+impl From<Error> for rusqlite::Error {
+    fn from(e: Error) -> Self {
+        rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,12 +257,28 @@ mod tests {
 
     #[test]
     fn from_env_is_none_when_unset() {
-        // SAFETY (test-only, single-threaded test execution within
-        // this process is not guaranteed by cargo test's default
-        // parallelism, but this var is unique to this test file and
-        // not touched elsewhere): remove, rather than assume absent.
+        // SAFETY (test-only; this var is unique to this test file and
+        // not touched by any other test, but see below for the one test
+        // that DOES also touch it — run together, in this same function,
+        // precisely to avoid a cross-test race on this process-global
+        // var under cargo test's default parallelism): remove, rather
+        // than assume absent.
         std::env::remove_var(ENV_KEY);
         assert!(Key::from_env().unwrap().is_none());
+
+        // Regression test, same var, same function (see SAFETY note
+        // above): scripts/run-demo.sh's load_env_file falls back to
+        // .env.example's `RATION_LEDGER_ENCRYPTION_KEY=` (a set, but
+        // empty, value) whenever the var isn't already set in the real
+        // environment or .env — this must disable encryption, not fail
+        // with WrongKeyLength(0), or a totally clean `scripts/
+        // run-demo.sh` run can never start ledger-core at all.
+        std::env::set_var(ENV_KEY, "");
+        assert!(
+            Key::from_env().unwrap().is_none(),
+            "an empty (but set) RATION_LEDGER_ENCRYPTION_KEY must disable encryption, not error"
+        );
+        std::env::remove_var(ENV_KEY);
     }
 
     #[test]
@@ -253,5 +349,47 @@ mod tests {
             Key::from_base64("not valid base64!!"),
             Err(Error::InvalidBase64(_))
         ));
+    }
+
+    #[test]
+    fn encrypt_opt_is_passthrough_when_crypto_is_none() {
+        let plaintext = "memo: bridge funding granted";
+        let stored = encrypt_opt(None, plaintext).unwrap();
+        assert_eq!(stored, plaintext, "no key configured means no encryption");
+    }
+
+    #[test]
+    fn decrypt_opt_is_passthrough_when_crypto_is_none() {
+        let stored = "memo: bridge funding granted";
+        let plaintext = decrypt_opt(None, stored).unwrap();
+        assert_eq!(plaintext, stored);
+    }
+
+    #[test]
+    fn encrypt_opt_then_decrypt_opt_round_trips_when_crypto_is_some() {
+        let key = test_key();
+        let plaintext = "rationale: headroom covers the full requested amount";
+        let stored = encrypt_opt(Some(&key), plaintext).unwrap();
+        assert_ne!(
+            stored, plaintext,
+            "a column encrypted with a real key must not be stored as plaintext"
+        );
+        let decrypted = decrypt_opt(Some(&key), &stored).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn rusqlite_error_from_crypto_error_is_to_sql_conversion_failure() {
+        let key = test_key();
+        let err: rusqlite::Error = Error::Decrypt.into();
+        match err {
+            rusqlite::Error::ToSqlConversionFailure(_) => {}
+            other => panic!("expected ToSqlConversionFailure, got {other:?}"),
+        }
+        // Exercises the real `?`-based conversion path `encrypt_opt`/
+        // `decrypt_opt` callers rely on: decrypting a non-ciphertext
+        // string under a real key must surface as a real rusqlite
+        // error, not panic or silently return garbage.
+        assert!(decrypt_opt(Some(&key), "not valid ciphertext").is_err());
     }
 }

@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -272,6 +272,9 @@ impl Ledger {
         })?;
         Ok(record)
     }
+    // NOTE: tenant.name/currency carry no sensitive free text per
+    // `crate::wal_crypto`'s encryption scope, so `create_tenant` never
+    // needs `inner.crypto` — unlike every mutating method below it.
 
     pub fn get_tenant(&self, id: &str) -> Result<TenantRecord, LedgerError> {
         let inner = self.inner.lock().expect("ledger mutex poisoned");
@@ -321,7 +324,10 @@ impl Ledger {
         };
 
         let event = WalEvent::DepositRecorded(record.clone());
-        append_and_commit(&mut inner, &event, |db| deposit::insert(db, &record))?;
+        let crypto = inner.crypto.clone();
+        append_and_commit(&mut inner, &event, |db| {
+            deposit::insert(db, &record, crypto.as_ref())
+        })?;
         Ok(record)
     }
 
@@ -382,10 +388,17 @@ impl Ledger {
         deposit_id: String,
         received_at_unix: i64,
         external_ref: String,
-    ) -> Result<(DepositRecord, Option<LedgerEntryRecord>, Vec<LedgerEntryRecord>), LedgerError>
-    {
+    ) -> Result<
+        (
+            DepositRecord,
+            Option<LedgerEntryRecord>,
+            Vec<LedgerEntryRecord>,
+        ),
+        LedgerError,
+    > {
         let mut inner = self.inner.lock().expect("ledger mutex poisoned");
-        let existing = deposit::get(&inner.db, &deposit_id)?
+        let crypto = inner.crypto.clone();
+        let existing = deposit::get(&inner.db, &deposit_id, crypto.as_ref())?
             .ok_or_else(|| LedgerError::DepositNotFound(deposit_id.clone()))?;
 
         if existing.status == DepositStatus::Received {
@@ -414,8 +427,12 @@ impl Ledger {
         // Release every outstanding bridge HOLD tied to this deposit, in
         // the same atomic frame as the credit. See the doc comment above
         // for why this must not be a separate, later operation.
-        let outstanding_holds =
-            list_outstanding_bridge_holds_for_deposit(&inner.db, &existing.tenant_id, &deposit_id)?;
+        let outstanding_holds = list_outstanding_bridge_holds_for_deposit(
+            &inner.db,
+            &existing.tenant_id,
+            &deposit_id,
+            crypto.as_ref(),
+        )?;
 
         let mut running_available = new_available;
         let mut running_held = current_balance.held_minor_units;
@@ -436,9 +453,7 @@ impl Ledger {
                 currency: hold.currency.clone(),
                 balance_after_minor_units: running_available,
                 reference: hold.reference.clone(),
-                memo: format!(
-                    "bridge hold released: backing deposit {deposit_id} received"
-                ),
+                memo: format!("bridge hold released: backing deposit {deposit_id} received"),
                 idempotency_key: format!("bridge-release:{}", hold.id),
                 created_at_unix: now_unix(),
             });
@@ -457,10 +472,16 @@ impl Ledger {
         let final_available = running_available;
         let final_held = running_held;
         append_and_commit(&mut inner, &event, |db| {
-            deposit::mark_received(db, &deposit_id, received_at_unix, &external_ref)?;
-            let inserted = insert_ledger_entry_if_new(db, &entry)?;
+            deposit::mark_received(
+                db,
+                &deposit_id,
+                received_at_unix,
+                &external_ref,
+                crypto.as_ref(),
+            )?;
+            let inserted = insert_ledger_entry_if_new(db, &entry, crypto.as_ref())?;
             for release in &released_holds {
-                insert_ledger_entry_if_new(db, release)?;
+                insert_ledger_entry_if_new(db, release, crypto.as_ref())?;
             }
             if inserted {
                 write_balance(db, &tenant_id, final_available, final_held)?;
@@ -488,18 +509,26 @@ impl Ledger {
     /// `crate::tenantauth::authorize_tenant`'s doc comment).
     pub fn get_deposit(&self, deposit_id: &str) -> Result<DepositRecord, LedgerError> {
         let inner = self.inner.lock().expect("ledger mutex poisoned");
-        deposit::get(&inner.db, deposit_id)?
+        deposit::get(&inner.db, deposit_id, inner.crypto.as_ref())?
             .ok_or_else(|| LedgerError::DepositNotFound(deposit_id.to_string()))
     }
 
     pub fn list_deposits(&self, tenant_id: &str) -> Result<Vec<DepositRecord>, LedgerError> {
         let inner = self.inner.lock().expect("ledger mutex poisoned");
-        Ok(deposit::list_for_tenant(&inner.db, tenant_id)?)
+        Ok(deposit::list_for_tenant(
+            &inner.db,
+            tenant_id,
+            inner.crypto.as_ref(),
+        )?)
     }
 
     pub fn list_late_deposits(&self, as_of_unix: i64) -> Result<Vec<DepositRecord>, LedgerError> {
         let inner = self.inner.lock().expect("ledger mutex poisoned");
-        Ok(deposit::list_late(&inner.db, as_of_unix)?)
+        Ok(deposit::list_late(
+            &inner.db,
+            as_of_unix,
+            inner.crypto.as_ref(),
+        )?)
     }
 
     pub fn get_balance(&self, tenant_id: &str) -> Result<(BalanceRecord, String), LedgerError> {
@@ -551,8 +580,11 @@ impl Ledger {
         }
 
         let mut inner = self.inner.lock().expect("ledger mutex poisoned");
+        let crypto = inner.crypto.clone();
 
-        if let Some(existing) = find_entry_by_idempotency_key(&inner.db, &idempotency_key)? {
+        if let Some(existing) =
+            find_entry_by_idempotency_key(&inner.db, &idempotency_key, crypto.as_ref())?
+        {
             let balance = read_balance(&inner.db, &tenant_id)?;
             return Ok(ApplyOutcome::Applied {
                 entry: existing,
@@ -656,7 +688,7 @@ impl Ledger {
             held_after_minor_units: new_held,
         };
         append_and_commit(&mut inner, &event, |db| {
-            insert_ledger_entry(db, &entry)?;
+            insert_ledger_entry(db, &entry, crypto.as_ref())?;
             write_balance(db, &tenant_id, new_available, new_held)
         })?;
 
@@ -678,7 +710,13 @@ impl Ledger {
         let limit = normalize_page_size(page_size);
         let offset = decode_page_token(page_token)?;
         let inner = self.inner.lock().expect("ledger mutex poisoned");
-        let rows = list_ledger_entries(&inner.db, tenant_id, limit + 1, offset)?;
+        let rows = list_ledger_entries(
+            &inner.db,
+            tenant_id,
+            limit + 1,
+            offset,
+            inner.crypto.as_ref(),
+        )?;
         Ok(paginate(rows, limit, offset))
     }
 
@@ -691,6 +729,7 @@ impl Ledger {
         policy_snapshot_json: String,
     ) -> Result<AgentDecisionRecord, LedgerError> {
         let mut inner = self.inner.lock().expect("ledger mutex poisoned");
+        let crypto = inner.crypto.clone();
         tenant::get(&inner.db, &tenant_id)?
             .ok_or_else(|| LedgerError::TenantNotFound(tenant_id.clone()))?;
 
@@ -705,7 +744,9 @@ impl Ledger {
         };
 
         let event = WalEvent::AgentDecisionRecorded(record.clone());
-        append_and_commit(&mut inner, &event, |db| agent_decision::insert(db, &record))?;
+        append_and_commit(&mut inner, &event, |db| {
+            agent_decision::insert(db, &record, crypto.as_ref())
+        })?;
         Ok(record)
     }
 
@@ -717,7 +758,10 @@ impl Ledger {
         let limit = if limit <= 0 { 50 } else { limit as i64 };
         let inner = self.inner.lock().expect("ledger mutex poisoned");
         Ok(agent_decision::list_for_tenant(
-            &inner.db, tenant_id, limit,
+            &inner.db,
+            tenant_id,
+            limit,
+            inner.crypto.as_ref(),
         )?)
     }
 }
@@ -768,7 +812,11 @@ fn append_and_commit(
     Ok(())
 }
 
-fn apply_replayed_event(db: &Connection, event: WalEvent) -> Result<(), LedgerError> {
+fn apply_replayed_event(
+    db: &Connection,
+    event: WalEvent,
+    crypto: Option<&wal_crypto::Key>,
+) -> Result<(), LedgerError> {
     let tx = db.unchecked_transaction()?;
     match event {
         WalEvent::TenantCreated(t) => {
@@ -776,7 +824,7 @@ fn apply_replayed_event(db: &Connection, event: WalEvent) -> Result<(), LedgerEr
             init_balance_row(&tx, &t.id, &t.currency)?;
         }
         WalEvent::DepositRecorded(d) => {
-            deposit::insert(&tx, &d)?;
+            deposit::insert(&tx, &d, crypto)?;
         }
         WalEvent::DepositReceivedWithCredit {
             deposit_id,
@@ -787,7 +835,7 @@ fn apply_replayed_event(db: &Connection, event: WalEvent) -> Result<(), LedgerEr
             available_after_minor_units,
             held_after_minor_units,
         } => {
-            deposit::mark_received(&tx, &deposit_id, received_at_unix, &external_ref)?;
+            deposit::mark_received(&tx, &deposit_id, received_at_unix, &external_ref, crypto)?;
             // Same idempotent-on-replay pattern as EntryApplied: only
             // write the balance if this entry row wasn't already
             // indexed. All rows in this frame (the credit plus every
@@ -801,11 +849,12 @@ fn apply_replayed_event(db: &Connection, event: WalEvent) -> Result<(), LedgerEr
             // `balance_after_minor_units` — which WAS the final
             // available balance before this fix — is the correct
             // reconstruction, not a guess. See the field's doc comment.
-            let available_after = available_after_minor_units.unwrap_or(entry.balance_after_minor_units);
+            let available_after =
+                available_after_minor_units.unwrap_or(entry.balance_after_minor_units);
 
-            let inserted = insert_ledger_entry_if_new(&tx, &entry)?;
+            let inserted = insert_ledger_entry_if_new(&tx, &entry, crypto)?;
             for release in &released_holds {
-                insert_ledger_entry_if_new(&tx, release)?;
+                insert_ledger_entry_if_new(&tx, release, crypto)?;
             }
             if inserted {
                 write_balance(
@@ -825,7 +874,7 @@ fn apply_replayed_event(db: &Connection, event: WalEvent) -> Result<(), LedgerEr
             // start on every boot) does not get double-applied to the
             // balance either — we only update the balance if this entry
             // row did not already exist.
-            let inserted = insert_ledger_entry_if_new(&tx, &entry)?;
+            let inserted = insert_ledger_entry_if_new(&tx, &entry, crypto)?;
             if inserted {
                 write_balance(
                     &tx,
@@ -836,7 +885,7 @@ fn apply_replayed_event(db: &Connection, event: WalEvent) -> Result<(), LedgerEr
             }
         }
         WalEvent::AgentDecisionRecorded(d) => {
-            agent_decision::insert(&tx, &d)?;
+            agent_decision::insert(&tx, &d, crypto)?;
         }
     }
     tx.commit()?;
@@ -884,7 +933,7 @@ fn replay_wal_into_index(
         };
 
         match serde_json::from_slice::<WalEvent>(&decrypted) {
-            Ok(event) => match apply_replayed_event(db, event) {
+            Ok(event) => match apply_replayed_event(db, event, crypto) {
                 Ok(()) => true,
                 Err(e) => {
                     first_error = Some(e);
@@ -974,7 +1023,17 @@ fn write_balance(
     Ok(())
 }
 
-fn insert_ledger_entry(conn: &Connection, e: &LedgerEntryRecord) -> rusqlite::Result<()> {
+/// `crypto`: see `crate::wal_crypto`'s module doc comment, point 2 —
+/// when `Some`, `reference`/`memo` are each encrypted independently
+/// before reaching SQLite; `None` preserves the original plaintext
+/// behavior exactly.
+fn insert_ledger_entry(
+    conn: &Connection,
+    e: &LedgerEntryRecord,
+    crypto: Option<&wal_crypto::Key>,
+) -> rusqlite::Result<()> {
+    let reference = wal_crypto::encrypt_opt(crypto, &e.reference)?;
+    let memo = wal_crypto::encrypt_opt(crypto, &e.memo)?;
     conn.execute(
         "INSERT INTO ledger_entries
             (id, tenant_id, entry_type, amount_minor_units, currency, balance_after_minor_units,
@@ -987,8 +1046,8 @@ fn insert_ledger_entry(conn: &Connection, e: &LedgerEntryRecord) -> rusqlite::Re
             e.amount_minor_units,
             e.currency,
             e.balance_after_minor_units,
-            e.reference,
-            e.memo,
+            reference,
+            memo,
             e.idempotency_key,
             e.created_at_unix,
         ],
@@ -1000,7 +1059,13 @@ fn insert_ledger_entry(conn: &Connection, e: &LedgerEntryRecord) -> rusqlite::Re
 /// (keyed on the unique `idempotency_key`) — used during WAL replay,
 /// where the same frame may be replayed more than once across restarts.
 /// Returns whether a new row was actually inserted.
-fn insert_ledger_entry_if_new(conn: &Connection, e: &LedgerEntryRecord) -> rusqlite::Result<bool> {
+fn insert_ledger_entry_if_new(
+    conn: &Connection,
+    e: &LedgerEntryRecord,
+    crypto: Option<&wal_crypto::Key>,
+) -> rusqlite::Result<bool> {
+    let reference = wal_crypto::encrypt_opt(crypto, &e.reference)?;
+    let memo = wal_crypto::encrypt_opt(crypto, &e.memo)?;
     let changed = conn.execute(
         "INSERT OR IGNORE INTO ledger_entries
             (id, tenant_id, entry_type, amount_minor_units, currency, balance_after_minor_units,
@@ -1013,13 +1078,29 @@ fn insert_ledger_entry_if_new(conn: &Connection, e: &LedgerEntryRecord) -> rusql
             e.amount_minor_units,
             e.currency,
             e.balance_after_minor_units,
-            e.reference,
-            e.memo,
+            reference,
+            memo,
             e.idempotency_key,
             e.created_at_unix,
         ],
     )?;
     Ok(changed > 0)
+}
+
+/// Decrypts `reference`/`memo` (a no-op per field when `crypto` is
+/// `None`) and returns a new, otherwise-identical record — every read
+/// path goes through this rather than mutating a row in place.
+fn decrypt_entry(
+    e: LedgerEntryRecord,
+    crypto: Option<&wal_crypto::Key>,
+) -> rusqlite::Result<LedgerEntryRecord> {
+    let reference = wal_crypto::decrypt_opt(crypto, &e.reference)?;
+    let memo = wal_crypto::decrypt_opt(crypto, &e.memo)?;
+    Ok(LedgerEntryRecord {
+        reference,
+        memo,
+        ..e
+    })
 }
 
 /// Finds every HOLD entry for `tenant_id` whose `reference` ties it to
@@ -1033,62 +1114,86 @@ fn insert_ledger_entry_if_new(conn: &Connection, e: &LedgerEntryRecord) -> rusql
 /// one outstanding hold for the same deposit, releases are recorded (and
 /// their running `balance_after_minor_units` computed) in a stable,
 /// deterministic order.
-fn list_outstanding_bridge_holds_for_deposit(
+/// Fetches every ledger entry for `tenant_id` of a single `entry_type`,
+/// decrypted — the shared read used by
+/// [`list_outstanding_bridge_holds_for_deposit`] below. Filters only on
+/// `tenant_id`/`entry_type` (both unencrypted, both covered by
+/// `idx_ledger_entries_tenant`) in SQL; any further filtering on the
+/// encrypted `reference` column happens in Rust, after decryption — see
+/// `crate::wal_crypto`'s module doc comment for why that boundary moved
+/// here instead of leaving `reference` unencrypted as a special case.
+fn list_ledger_entries_by_tenant_and_type(
     conn: &Connection,
     tenant_id: &str,
-    deposit_id: &str,
+    entry_type: i32,
+    crypto: Option<&wal_crypto::Key>,
 ) -> Result<Vec<LedgerEntryRecord>, LedgerError> {
-    let prefix = format!("bridge:{deposit_id}:");
-    let like_pattern = format!("{prefix}%");
-    let hold_type = LedgerEntryType::Hold.as_i32();
     let mut stmt = conn.prepare(
         "SELECT id, tenant_id, entry_type, amount_minor_units, currency, balance_after_minor_units,
                 reference, memo, idempotency_key, created_at_unix
          FROM ledger_entries
-         WHERE tenant_id = ?1 AND entry_type = ?2 AND reference LIKE ?3
+         WHERE tenant_id = ?1 AND entry_type = ?2
          ORDER BY created_at_unix ASC, id ASC",
     )?;
-    let holds: Vec<LedgerEntryRecord> = stmt
-        .query_map(
-            rusqlite::params![tenant_id, hold_type, like_pattern],
-            row_to_entry,
-        )?
+    let rows: Vec<LedgerEntryRecord> = stmt
+        .query_map(rusqlite::params![tenant_id, entry_type], row_to_entry)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
+    Ok(rows
+        .into_iter()
+        .map(|e| decrypt_entry(e, crypto))
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn list_outstanding_bridge_holds_for_deposit(
+    conn: &Connection,
+    tenant_id: &str,
+    deposit_id: &str,
+    crypto: Option<&wal_crypto::Key>,
+) -> Result<Vec<LedgerEntryRecord>, LedgerError> {
+    let prefix = format!("bridge:{deposit_id}:");
+    let hold_type = LedgerEntryType::Hold.as_i32();
+    let holds: Vec<LedgerEntryRecord> =
+        list_ledger_entries_by_tenant_and_type(conn, tenant_id, hold_type, crypto)?
+            .into_iter()
+            .filter(|h| h.reference.starts_with(&prefix))
+            .collect();
+    if holds.is_empty() {
+        return Ok(holds);
+    }
 
     let release_type = LedgerEntryType::Release.as_i32();
-    let mut outstanding = Vec::with_capacity(holds.len());
-    for hold in holds {
-        let already_released: Option<i64> = conn
-            .query_row(
-                "SELECT 1 FROM ledger_entries WHERE tenant_id = ?1 AND entry_type = ?2 AND reference = ?3 LIMIT 1",
-                rusqlite::params![tenant_id, release_type, hold.reference],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if already_released.is_none() {
-            outstanding.push(hold);
-        }
-    }
-    Ok(outstanding)
+    let released_refs: std::collections::HashSet<String> =
+        list_ledger_entries_by_tenant_and_type(conn, tenant_id, release_type, crypto)?
+            .into_iter()
+            .map(|r| r.reference)
+            .collect();
+
+    Ok(holds
+        .into_iter()
+        .filter(|h| !released_refs.contains(&h.reference))
+        .collect())
 }
 
 fn find_entry_by_idempotency_key(
     conn: &Connection,
     idempotency_key: &str,
+    crypto: Option<&wal_crypto::Key>,
 ) -> rusqlite::Result<Option<LedgerEntryRecord>> {
-    conn.query_row(
-        "SELECT id, tenant_id, entry_type, amount_minor_units, currency, balance_after_minor_units,
+    let row = conn
+        .query_row(
+            "SELECT id, tenant_id, entry_type, amount_minor_units, currency, balance_after_minor_units,
                 reference, memo, idempotency_key, created_at_unix
          FROM ledger_entries WHERE idempotency_key = ?1",
-        rusqlite::params![idempotency_key],
-        row_to_entry,
-    )
-    .map(Some)
-    .or_else(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        other => Err(other),
-    })
+            rusqlite::params![idempotency_key],
+            row_to_entry,
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    row.map(|e| decrypt_entry(e, crypto)).transpose()
 }
 
 fn list_ledger_entries(
@@ -1096,6 +1201,7 @@ fn list_ledger_entries(
     tenant_id: &str,
     limit: i64,
     offset: i64,
+    crypto: Option<&wal_crypto::Key>,
 ) -> rusqlite::Result<Vec<LedgerEntryRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, tenant_id, entry_type, amount_minor_units, currency, balance_after_minor_units,
@@ -1103,8 +1209,10 @@ fn list_ledger_entries(
          FROM ledger_entries WHERE tenant_id = ?1
          ORDER BY created_at_unix ASC, id ASC LIMIT ?2 OFFSET ?3",
     )?;
-    let rows = stmt.query_map(rusqlite::params![tenant_id, limit, offset], row_to_entry)?;
-    rows.collect()
+    let rows = stmt
+        .query_map(rusqlite::params![tenant_id, limit, offset], row_to_entry)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter().map(|e| decrypt_entry(e, crypto)).collect()
 }
 
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<LedgerEntryRecord> {
@@ -1335,7 +1443,10 @@ mod tests {
         // and rebuild the identical SQLite index from them.
         let (ledger, replayed) =
             Ledger::open_with_encryption(&wal_path, &db_path, Some(key)).unwrap();
-        assert_eq!(replayed, 2, "both WAL frames (TenantCreated, EntryApplied) must replay");
+        assert_eq!(
+            replayed, 2,
+            "both WAL frames (TenantCreated, EntryApplied) must replay"
+        );
 
         let (balance, currency) = ledger.get_balance(&tenant_id).unwrap();
         assert_eq!(balance.available_minor_units, 10_000);
@@ -1381,5 +1492,234 @@ mod tests {
             reopened_plain.is_err(),
             "recovery with encryption disabled against an encrypted WAL must fail, not silently succeed"
         );
+    }
+
+    /// Reads every byte SQLite has durably written for `db_path` —
+    /// both the main database file and its `-wal` journal (SQLite's own
+    /// WAL, from `PRAGMA journal_mode=WAL` in `init_schema`; unrelated
+    /// to `crate::wal_ffi`'s WAL), since a just-committed page can live
+    /// in either file until the next checkpoint. Scanning only
+    /// `db_path` itself would make a plaintext-leak assertion pass for
+    /// the wrong reason (the data just hadn't checkpointed yet), not
+    /// because encryption actually worked.
+    fn read_all_sqlite_bytes(db_path: &PathBuf) -> Vec<u8> {
+        let mut bytes = std::fs::read(db_path).unwrap_or_default();
+        let wal_journal_path = PathBuf::from(format!("{}-wal", db_path.display()));
+        if let Ok(wal_bytes) = std::fs::read(&wal_journal_path) {
+            bytes.extend(wal_bytes);
+        }
+        bytes
+    }
+
+    /// Full round trip for the SQLite column-level encryption scoped in
+    /// `BUILD-LOG-2026-10-23.md`'s round-1 "remaining" item and
+    /// implemented by `crate::wal_crypto`'s `encrypt_opt`/`decrypt_opt`:
+    /// writes a distinctive marker string into every column in scope —
+    /// `deposit.external_ref`, `ledger_entries.reference`/`memo`,
+    /// `agent_decisions.trigger`/`rationale`/`policy_snapshot_json` —
+    /// then proves (a) none of those markers appear anywhere in the raw
+    /// SQLite bytes on disk, and (b) every one of them reads back
+    /// through the `Ledger` API exactly as written, decrypted
+    /// transparently, both before and after a simulated restart.
+    #[test]
+    fn sqlite_free_text_columns_are_encrypted_on_disk_and_decrypt_correctly() {
+        let wal_path = temp_wal_path("sqlite-columns");
+        let db_path = temp_db_path("sqlite-columns");
+        let key = test_encryption_key();
+
+        let tenant_id = {
+            let (ledger, _) =
+                Ledger::open_with_encryption(&wal_path, &db_path, Some(key.clone())).unwrap();
+
+            let t = ledger
+                .create_tenant("Column Co".into(), "USD".into(), 0)
+                .unwrap();
+
+            let deposit = ledger
+                .record_deposit(
+                    t.id.clone(),
+                    Money::new(1_000, "USD").unwrap(),
+                    now_unix(),
+                    "MARKER-EXTERNAL-REF".into(),
+                )
+                .unwrap();
+            let (_, credit_entry, _) = ledger
+                .mark_deposit_received_with_entry(
+                    deposit.id.clone(),
+                    now_unix(),
+                    "MARKER-EXTERNAL-REF".into(),
+                )
+                .unwrap();
+            assert!(credit_entry.is_some());
+
+            let applied = ledger
+                .apply_entry(
+                    t.id.clone(),
+                    LedgerEntryType::Debit,
+                    Money::new(100, "USD").unwrap(),
+                    "MARKER-REFERENCE".into(),
+                    "debit-key-1".into(),
+                    "MARKER-MEMO".into(),
+                )
+                .unwrap();
+            assert!(matches!(applied, ApplyOutcome::Applied { .. }));
+
+            ledger
+                .record_agent_decision(
+                    t.id.clone(),
+                    "MARKER-TRIGGER".into(),
+                    AgentAction::RationBridge,
+                    "MARKER-RATIONALE".into(),
+                    "MARKER-POLICY-SNAPSHOT".into(),
+                )
+                .unwrap();
+
+            // (b, pre-restart) every column reads back decrypted
+            // correctly through the Ledger API.
+            let deposits = ledger.list_deposits(&t.id).unwrap();
+            assert_eq!(deposits.len(), 1);
+            assert_eq!(deposits[0].external_ref, "MARKER-EXTERNAL-REF");
+
+            let (entries, _) = ledger.list_entries(&t.id, 0, "").unwrap();
+            let debit_entry = entries
+                .iter()
+                .find(|e| e.idempotency_key == "debit-key-1")
+                .unwrap();
+            assert_eq!(debit_entry.reference, "MARKER-REFERENCE");
+            assert_eq!(debit_entry.memo, "MARKER-MEMO");
+
+            let decisions = ledger.list_agent_decisions(&t.id, 10).unwrap();
+            assert_eq!(decisions.len(), 1);
+            assert_eq!(decisions[0].trigger, "MARKER-TRIGGER");
+            assert_eq!(decisions[0].rationale, "MARKER-RATIONALE");
+            assert_eq!(decisions[0].policy_snapshot_json, "MARKER-POLICY-SNAPSHOT");
+
+            t.id
+            // `ledger` is dropped here, simulating process shutdown.
+        };
+
+        // (a) none of the markers may appear anywhere in the raw
+        // SQLite bytes.
+        let raw_db_bytes = read_all_sqlite_bytes(&db_path);
+        for marker in [
+            "MARKER-EXTERNAL-REF",
+            "MARKER-REFERENCE",
+            "MARKER-MEMO",
+            "MARKER-TRIGGER",
+            "MARKER-RATIONALE",
+            "MARKER-POLICY-SNAPSHOT",
+        ] {
+            assert!(
+                !raw_db_bytes
+                    .windows(marker.len())
+                    .any(|w| w == marker.as_bytes()),
+                "SQLite bytes must not contain {marker:?} in plaintext when column encryption is enabled"
+            );
+        }
+
+        // (b, post-restart) reopening with the same key must replay the
+        // WAL and reconstruct the SQLite index identically — proving
+        // column-level encryption survives a restart just like
+        // WAL-level encryption already does.
+        let (reopened, replayed) =
+            Ledger::open_with_encryption(&wal_path, &db_path, Some(key)).unwrap();
+        assert!(replayed > 0, "the WAL frames written above must replay");
+        let deposits_after = reopened.list_deposits(&tenant_id).unwrap();
+        assert_eq!(deposits_after[0].external_ref, "MARKER-EXTERNAL-REF");
+        let decisions_after = reopened.list_agent_decisions(&tenant_id, 10).unwrap();
+        assert_eq!(decisions_after[0].rationale, "MARKER-RATIONALE");
+    }
+
+    /// Regression test for the SQL-to-Rust refactor in
+    /// `list_outstanding_bridge_holds_for_deposit`/
+    /// `list_ledger_entries_by_tenant_and_type`, made necessary once
+    /// `ledger_entries.reference` became an encrypted column (AES-GCM
+    /// ciphertext can't be matched with SQL `LIKE`/`=` — see
+    /// `crate::wal_crypto`'s module doc comment): a bridge-funding HOLD
+    /// tied to a deposit via the `bridge:<deposit_id>:<id>` reference
+    /// convention (`services/card-issuance/internal/bridge`) must still
+    /// be found and released, atomically with that deposit's credit,
+    /// when the deposit is marked received — with or without column
+    /// encryption enabled.
+    fn assert_bridge_hold_release_matches_by_reference(crypto: Option<wal_crypto::Key>) {
+        let label = if crypto.is_some() { "enc" } else { "plain" };
+        let wal_path = temp_wal_path(&format!("bridge-release-{label}"));
+        let db_path = temp_db_path(&format!("bridge-release-{label}"));
+        let (ledger, _) = Ledger::open_with_encryption(&wal_path, &db_path, crypto).unwrap();
+
+        let t = ledger
+            .create_tenant("Bridge Co".into(), "USD".into(), 0)
+            .unwrap();
+
+        // Unrelated initial capital so the HOLD below has headroom.
+        ledger
+            .apply_entry(
+                t.id.clone(),
+                LedgerEntryType::Credit,
+                Money::new(10_000, "USD").unwrap(),
+                "initial capital".into(),
+                "initial-credit".into(),
+                "".into(),
+            )
+            .unwrap();
+
+        let deposit = ledger
+            .record_deposit(
+                t.id.clone(),
+                Money::new(5_000, "USD").unwrap(),
+                now_unix(),
+                "ext-ref-1".into(),
+            )
+            .unwrap();
+
+        // A bridge-funding HOLD against this tenant, tagged to the
+        // not-yet-received deposit per the `bridge:<deposit_id>:<id>`
+        // convention.
+        let hold_reference = format!("bridge:{}:hold-1", deposit.id);
+        ledger
+            .apply_entry(
+                t.id.clone(),
+                LedgerEntryType::Hold,
+                Money::new(3_000, "USD").unwrap(),
+                hold_reference.clone(),
+                "hold-key-1".into(),
+                "bridge funding hold".into(),
+            )
+            .unwrap();
+
+        let (balance_before, _) = ledger.get_balance(&t.id).unwrap();
+        assert_eq!(balance_before.available_minor_units, 7_000);
+        assert_eq!(balance_before.held_minor_units, 3_000);
+
+        // The deposit backing the hold is received: the hold must be
+        // released in the SAME call, atomically with the credit.
+        let (_, _entry, released) = ledger
+            .mark_deposit_received_with_entry(deposit.id.clone(), now_unix(), "ext-ref-1".into())
+            .unwrap();
+
+        assert_eq!(released.len(), 1, "exactly one hold must be released");
+        assert_eq!(released[0].reference, hold_reference);
+        assert_eq!(released[0].entry_type, LedgerEntryType::Release);
+
+        let (balance_after, _) = ledger.get_balance(&t.id).unwrap();
+        assert_eq!(
+            balance_after.held_minor_units, 0,
+            "the hold must be fully released"
+        );
+        assert_eq!(
+            balance_after.available_minor_units,
+            7_000 + 5_000 + 3_000,
+            "available balance = pre-deposit available + the deposit credit + the released hold"
+        );
+    }
+
+    #[test]
+    fn bridge_hold_release_matches_by_reference_without_encryption() {
+        assert_bridge_hold_release_matches_by_reference(None);
+    }
+
+    #[test]
+    fn bridge_hold_release_matches_by_reference_with_encryption() {
+        assert_bridge_hold_release_matches_by_reference(Some(test_encryption_key()));
     }
 }
