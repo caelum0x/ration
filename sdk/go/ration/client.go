@@ -16,6 +16,20 @@ import (
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+)
+
+// apiKeyHeader/authorizationHeader/bearerPrefix must match
+// services/gateway/internal/tenantauth's identically-named constants
+// exactly — that package is the server side of this exchange and is a
+// separate Go module, so there is no shared import to keep these in
+// sync; they are repeated here on purpose (same reasoning as every
+// internal services/*/internal/authclient package's own bearerHeader
+// constant).
+const (
+	apiKeyHeader        = "x-api-key"
+	authorizationHeader = "authorization"
+	bearerPrefix        = "Bearer "
 )
 
 // Card and ActivityEvent are gateway.proto's generated wire types,
@@ -57,9 +71,60 @@ func WithDialOptions(opts ...grpc.DialOption) DialOption {
 	return func(c *dialConfig) { c.grpcOpts = append(c.grpcOpts, opts...) }
 }
 
+// WithAPIKey attaches secret (a services/auth IssueAPIKey plaintext
+// response, e.g. minted via `ration apikey issue`) as "x-api-key" metadata
+// on every unary and streaming RPC this client makes.
+//
+// This closes a real gap: gateway's own internal/tenantauth interceptor
+// defaults RATION_GATEWAY_REQUIRE_TENANT_AUTH to true (services/gateway/
+// internal/config), so every RPC this SDK makes against a default-config
+// deployment is rejected with codes.Unauthenticated unless some credential
+// is attached — services/cli and services/tui already do this internally
+// via their own (unexported, per-service) internal/authclient package, but
+// this SDK — the one artifact an external platform customer actually
+// imports — had no equivalent before this, which meant doc.go's and
+// README.md's own "Typical use" example never worked against a real
+// gateway's default config. Use WithBearerToken instead for a short-lived
+// JWT (services/auth's MintJWT output) rather than a long-lived API key.
+func WithAPIKey(secret string) DialOption {
+	return func(c *dialConfig) {
+		c.grpcOpts = append(c.grpcOpts,
+			grpc.WithChainUnaryInterceptor(metadataUnaryInterceptor(apiKeyHeader, secret)),
+			grpc.WithChainStreamInterceptor(metadataStreamInterceptor(apiKeyHeader, secret)),
+		)
+	}
+}
+
+// WithBearerToken attaches token (a services/auth MintJWT response) as
+// "authorization: Bearer <token>" metadata on every unary and streaming
+// RPC this client makes — see WithAPIKey's doc comment for why a
+// credential is required at all against a default-config gateway.
+func WithBearerToken(token string) DialOption {
+	return func(c *dialConfig) {
+		c.grpcOpts = append(c.grpcOpts,
+			grpc.WithChainUnaryInterceptor(metadataUnaryInterceptor(authorizationHeader, bearerPrefix+token)),
+			grpc.WithChainStreamInterceptor(metadataStreamInterceptor(authorizationHeader, bearerPrefix+token)),
+		)
+	}
+}
+
+func metadataUnaryInterceptor(key, value string) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		return invoker(metadata.AppendToOutgoingContext(ctx, key, value), method, req, reply, cc, opts...)
+	}
+}
+
+func metadataStreamInterceptor(key, value string) grpc.StreamClientInterceptor {
+	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		return streamer(metadata.AppendToOutgoingContext(ctx, key, value), desc, cc, method, opts...)
+	}
+}
+
 // Dial connects to a Ration gateway at addr (e.g. "localhost:7002", gateway's
 // GATEWAY_GRPC_ADDR default). Dials in plaintext by default; pass
-// WithDialOptions(grpc.WithTransportCredentials(...)) for mTLS.
+// WithDialOptions(grpc.WithTransportCredentials(...)) for mTLS, and
+// WithAPIKey/WithBearerToken for the credential a default-config gateway
+// requires (see WithAPIKey's doc comment).
 func Dial(addr string, opts ...DialOption) (*Client, error) {
 	cfg := &dialConfig{grpcOpts: []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}}
 	for _, opt := range opts {

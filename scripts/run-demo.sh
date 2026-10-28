@@ -22,7 +22,26 @@ cd "$ROOT"
 load_env_file() {
   local file="$1"
   [ -f "$file" ] || return 0
-  while IFS='=' read -r key value; do
+  local line key value
+  while IFS= read -r line; do
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    # Split on the FIRST '=' only via parameter expansion, not
+    # `IFS='=' read -r key value`: bash's `read` silently drops a
+    # single trailing IFS-delimiter character from the line (the same
+    # trailing-empty-field-is-dropped behavior word splitting uses
+    # elsewhere), which truncates the last character of any value that
+    # itself ends in exactly one '=' — e.g. RATION_LEDGER_ENCRYPTION_KEY
+    # and every other base64 secret this repo documents generating via
+    # `openssl rand -base64 32` (a 32-byte input always base64-encodes
+    # with exactly one '=' of padding, so this was not a rare edge case:
+    # it broke 100% of the time for that exact documented key length).
+    # Found live: a real `openssl rand -base64 32` key in .env crashed
+    # ledger-core at startup with `InvalidBase64(InvalidPadding)` on a
+    # plain `scripts/run-demo.sh` run, not by reading code.
+    key="${line%%=*}"
+    value="${line#*=}"
     case "$key" in
       ''|'#'*) continue ;;
     esac

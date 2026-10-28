@@ -86,6 +86,7 @@ the resulting agent decisions — all live, from the terminal.`,
 		newSimulateDepositCmd(flags),
 		newStatusCmd(flags),
 		newAuditCheckCmd(flags),
+		newAPIKeyCmd(flags),
 	)
 
 	return root

@@ -149,6 +149,7 @@ services:
     depends_on:
       - ledger-core
       - otel-collector
+      - auth
     ports:
       - "7011:7011"
       - "9095:9095"
@@ -157,6 +158,14 @@ services:
       TENANT_REGISTRY_GRPC_ADDR: "0.0.0.0:7011"
       TENANT_REGISTRY_METRICS_ADDR: "0.0.0.0:9095"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      # REQUIRED — same bug class as gateway's AUTH_ADDR/agent's and
+      # webhook-ingestion's AUTH_GRPC_ADDR below, found the same way
+      # (actually running `docker compose up --build`, not reading
+      # code): services/tenant-registry/internal/config reads
+      # AUTH_GRPC_ADDR (default "localhost:7010", this container's own
+      # loopback) to mint an operator credential at startup; without
+      # this, the service crash-loops on "connection refused" forever.
+      AUTH_GRPC_ADDR: "auth:7010"
 
   card-issuance:
     build:
@@ -167,6 +176,7 @@ services:
     depends_on:
       - ledger-core
       - otel-collector
+      - auth
     ports:
       - "7012:7012"
       - "9096:9096"
@@ -180,6 +190,11 @@ services:
       RATION_BRIDGE_MAX_FRACTION: "0.6"
       RATION_BRIDGE_MIN_GRANT_MINOR_UNITS: "500"
       RATION_BRIDGE_VELOCITY_WINDOW_HOURS: "24"
+      # REQUIRED — same bug class as gateway's AUTH_ADDR above, found
+      # the same way: services/card-issuance/internal/config reads
+      # AUTH_GRPC_ADDR (default "localhost:7010") to mint an operator
+      # credential at startup; without this, the service crash-loops.
+      AUTH_GRPC_ADDR: "auth:7010"
 
   webhook-ingestion:
     build:
@@ -190,6 +205,7 @@ services:
     depends_on:
       - ledger-core
       - otel-collector
+      - auth
     ports:
       - "7013:7013"
       - "8081:8081"
@@ -201,6 +217,15 @@ services:
       WEBHOOK_INGESTION_HTTP_ADDR: "0.0.0.0:8081"
       WEBHOOK_INGESTION_METRICS_ADDR: "0.0.0.0:9097"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      # REQUIRED — same bug class as gateway's AUTH_ADDR above, found
+      # the same way: services/webhook-ingestion/internal/config reads
+      # AUTH_GRPC_ADDR (default "localhost:7010") to mint an operator
+      # credential at startup; without this, the service crash-loops,
+      # which is why gateway's own webhookeventsclient then logged
+      # "name resolver error: produced zero addresses" retrying forever
+      # — webhook-ingestion was never actually up long enough to
+      # resolve.
+      AUTH_GRPC_ADDR: "auth:7010"
 
   gateway:
     build:
@@ -213,6 +238,7 @@ services:
       - card-issuance
       - webhook-ingestion
       - otel-collector
+      - auth
     ports:
       - "7002:7002"
       - "8082:8082"
@@ -222,6 +248,32 @@ services:
       CARD_ISSUANCE_ADDR: "card-issuance:7012"
       WEBHOOK_INGESTION_ADDR: "webhook-ingestion:7013"
       GATEWAY_GRPC_ADDR: "0.0.0.0:7002"
+      # REQUIRED — found live by actually running `docker compose up
+      # --build`: without this, services/gateway/internal/config's
+      # getenvDefault("AUTH_ADDR", "localhost:7010") resolves to THIS
+      # container's own loopback (no listener there), not auth's.
+      # gateway is the one service in this repo whose own config reads
+      # "AUTH_ADDR" rather than every other service's "AUTH_GRPC_ADDR"
+      # (compare services/{auth,card-issuance,tenant-registry,
+      # webhook-ingestion}/internal/config, services/{cli,tui,agent}'s
+      # main.go — all "AUTH_GRPC_ADDR"; .env.example already documents
+      # gateway's "AUTH_ADDR" correctly at line ~96, this file just
+      # never matched it) — setting AUTH_GRPC_ADDR here first (an easy
+      # mistake, matching every sibling service) silently did nothing.
+      # Unlike ledger-core's lazy authclient channel (see ledger-core's
+      # own AUTH_GRPC_ADDR comment below), gateway's main.go calls
+      # authclient.MintOperatorJWT synchronously at startup (so it can
+      # present a credential on every RPC it forwards to ledger-core,
+      # which itself now enforces tenant auth — see
+      # services/ledger-core/src/tenantauth.rs) and os.Exit(1)s if that
+      # RPC fails — so gateway crash-looped forever ("connection
+      # refused", restart: unless-stopped retrying every few seconds)
+      # before this was set to the name gateway actually reads. This
+      # made the entire containerized stack's one public entrypoint
+      # (the service every other RPC in this file forwards through)
+      # completely non-functional on a plain `docker compose up
+      # --build`.
+      AUTH_ADDR: "auth:7010"
       # internal/httpapi's REST/JSON facade (docs/SCALE-EXPANSION.md
       # section 7, docs/adr/0003) dials this process's own gRPC
       # listener above at GATEWAY_GRPC_DIAL_ADDR — "localhost:7002"
@@ -254,6 +306,7 @@ services:
       - ledger-core
       - gateway
       - otel-collector
+      - auth
     ports:
       - "9093:9093"
     environment:
@@ -263,6 +316,12 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
       RATION_AGENT_POLL_INTERVAL_SECONDS: "10"
       RATION_AGENT_MODEL: "${RATION_AGENT_MODEL:-claude-sonnet-5}"
+      # REQUIRED — same bug class as gateway's AUTH_ADDR above, found
+      # the same way: services/agent/cmd/agent/main.go reads
+      # AUTH_GRPC_ADDR (default "localhost:7010") to mint an operator
+      # credential at startup; without this, the agent loop crash-loops
+      # and never polls for late deposits or grants bridge funding.
+      AUTH_GRPC_ADDR: "auth:7010"
       # Without this, the agent starts and logs a warning (see
       # services/agent/cmd/agent/main.go) but every LLM call it makes
       # fails. Set it in a .env file next to this docker-compose.yml
@@ -300,9 +359,24 @@ services:
     depends_on:
       - ledger-core
       - gateway
+      - auth
+      - audit-log
     environment:
       LEDGER_CORE_ADDR: "ledger-core:7001"
       GATEWAY_GRPC_ADDR: "gateway:7002"
+      # REQUIRED — same bug class already fixed for ledger-core below
+      # (see that service's own AUTH_GRPC_ADDR comment): without this,
+      # main.go's envOrDefault("AUTH_GRPC_ADDR", "localhost:7010")
+      # resolves to this container's own loopback, not auth's, and
+      # every subcommand that mints an operator credential at startup
+      # (dialClients, i.e. every real command including `ration seed`)
+      # fails with "connection refused" before it ever reaches
+      # ledger-core or gateway. Found live: `docker compose run --rm
+      # cli seed` failed with exactly that error before this was added.
+      AUTH_GRPC_ADDR: "auth:7010"
+      # REQUIRED for `ration audit-check`, same reasoning — defaults to
+      # localhost:7003 otherwise.
+      AUDIT_LOG_GRPC_ADDR: "audit-log:7003"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
 
   tui:
@@ -314,11 +388,17 @@ services:
     depends_on:
       - ledger-core
       - gateway
+      - auth
     stdin_open: true
     tty: true
     environment:
       LEDGER_CORE_ADDR: "ledger-core:7001"
       GATEWAY_GRPC_ADDR: "gateway:7002"
+      # REQUIRED — identical bug/fix to cli's AUTH_GRPC_ADDR above: the
+      # TUI also mints an operator JWT from auth at startup
+      # (internal/authclient.MintOperatorJWT) before it can dial
+      # gateway at all.
+      AUTH_GRPC_ADDR: "auth:7010"
       RATION_TUI_METRICS_ADDR: "0.0.0.0:9094"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
 

@@ -82,3 +82,27 @@ func (c *Client) MintOperatorJWT(ctx context.Context, subject string, ttl time.D
 	}
 	return resp.GetToken(), time.Unix(resp.GetExpiresAtUnix(), 0), nil
 }
+
+// IssueAPIKey mints a new, long-lived API key for tenantID (or an
+// operator-scoped key when isOperator is true, in which case tenantID
+// must be empty — see proto/auth.proto's IssueAPIKeyRequest.is_operator
+// doc comment), labeled name. The returned secret is the plaintext
+// credential: auth never stores or returns it again, so the caller
+// (ration's own "apikey issue" command) must surface it to the operator
+// immediately. This is what an external platform customer's own backend
+// is meant to call once, out of band, and then pass the result to
+// sdk/go/ration's WithAPIKey — see that package's doc comment for why
+// a credential is required at all against gateway's default config.
+func (c *Client) IssueAPIKey(ctx context.Context, tenantID, name string, isOperator bool) (*authpb.IssueAPIKeyResponse, error) {
+	rctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	resp, err := c.stub.IssueAPIKey(rctx, &authpb.IssueAPIKeyRequest{
+		TenantId:   tenantID,
+		Name:       name,
+		IsOperator: isOperator,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("authclient: issue API key: %w", err)
+	}
+	return resp, nil
+}

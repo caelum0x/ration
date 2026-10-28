@@ -12,9 +12,12 @@
 // the usual reasons (no JSON round-trip, native streaming for
 // StreamActivity, compile-time checked request/response types).
 //
-// Typical use:
+// Typical use. Gateway's internal/tenantauth interceptor requires a
+// credential by default (RATION_GATEWAY_REQUIRE_TENANT_AUTH, see
+// services/gateway/internal/config) — mint one once with
+// `ration apikey issue --tenant <id>` and pass it via WithAPIKey:
 //
-//	client, err := ration.Dial("gateway.example.com:7002")
+//	client, err := ration.Dial("gateway.example.com:7002", ration.WithAPIKey("rk_..."))
 //	if err != nil {
 //		log.Fatal(err)
 //	}

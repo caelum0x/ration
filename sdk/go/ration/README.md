@@ -4,10 +4,19 @@ A typed Go client for Ration's [`gateway.proto`](../../../proto/gateway.proto)
 `Gateway` service — the same RPC surface Ration's own TUI and CLI use, now
 packaged for a platform customer to import directly.
 
+Gateway requires a credential by default (`RATION_GATEWAY_REQUIRE_TENANT_AUTH`,
+true unless a deployment opts out — see `services/gateway/internal/config`).
+Mint one once with the CLI:
+
+```sh
+ration apikey issue --tenant tenant_1 --name "my backend"
+# secret:     rk_...  — copy it now, it is never shown again
+```
+
 ```go
 import "github.com/caelum0x/ration/sdk/go/ration"
 
-client, err := ration.Dial("localhost:7002")
+client, err := ration.Dial("localhost:7002", ration.WithAPIKey("rk_..."))
 if err != nil {
 	log.Fatal(err)
 }
@@ -41,7 +50,7 @@ if err := <-errs; err != nil {
 
 `Dial` connects in plaintext by default. For mTLS against a production
 deployment (see `pkg/mtls`, `infra/dev-ca/`), pass your own transport
-credentials:
+credentials — combine freely with `WithAPIKey`/`WithBearerToken`:
 
 ```go
 creds, _ := credentials.NewClientTLSFromFile("ca.pem", "gateway")
