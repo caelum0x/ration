@@ -128,3 +128,24 @@ func (c *Client) RevokeAPIKey(ctx context.Context, keyID string) (revoked bool, 
 	}
 	return resp.GetRevoked(), nil
 }
+
+// ListAPIKeys returns every issued key's metadata via auth.ListAPIKeys,
+// optionally filtered to tenantID (empty lists every key, including
+// operator-scoped ones). This is the real missing read side of
+// IssueAPIKey/RevokeAPIKey above: before this, an operator who issued a
+// key in an earlier session (or inherited a deployment someone else set
+// up) had no way to discover what key_ids even existed to revoke, or to
+// audit which keys were still live versus already revoked — only a
+// key_id they personally still had printed somewhere from `apikey
+// issue`'s own one-time output could ever be acted on.
+func (c *Client) ListAPIKeys(ctx context.Context, tenantID string) ([]*authpb.APIKeyRecord, error) {
+	rctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	resp, err := c.stub.ListAPIKeys(rctx, &authpb.ListAPIKeysRequest{
+		TenantId: tenantID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("authclient: list API keys: %w", err)
+	}
+	return resp.GetKeys(), nil
+}

@@ -30,6 +30,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -179,4 +180,49 @@ func (s *Store) Revoke(keyID string) error {
 	}
 	rec.revoked = true
 	return nil
+}
+
+// Record is List's exported view of an issued key's metadata. Never
+// carries the plaintext secret: Issue is the only call that ever sees
+// it, and it is never stored anywhere afterward (see this package's
+// doc comment).
+type Record struct {
+	KeyID         string
+	TenantID      string
+	Name          string
+	CreatedAtUnix int64
+	Revoked       bool
+	IsOperator    bool
+}
+
+// List returns every issued key's metadata, optionally filtered to one
+// tenantID (empty returns every key, tenant-scoped and operator-scoped
+// alike). Results are sorted by CreatedAtUnix ascending, then KeyID, for
+// a stable, deterministic order a caller (or a test) can rely on —
+// byID's own map iteration order is not stable across calls.
+func (s *Store) List(tenantID string) []Record {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]Record, 0, len(s.byID))
+	for _, rec := range s.byID {
+		if tenantID != "" && rec.tenantID != tenantID {
+			continue
+		}
+		out = append(out, Record{
+			KeyID:         rec.keyID,
+			TenantID:      rec.tenantID,
+			Name:          rec.name,
+			CreatedAtUnix: rec.createdAtUnix,
+			Revoked:       rec.revoked,
+			IsOperator:    rec.isOperator,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAtUnix != out[j].CreatedAtUnix {
+			return out[i].CreatedAtUnix < out[j].CreatedAtUnix
+		}
+		return out[i].KeyID < out[j].KeyID
+	})
+	return out
 }

@@ -380,6 +380,183 @@ func (x *RevokeAPIKeyResponse) GetRevoked() bool {
 	return false
 }
 
+type ListAPIKeysRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// tenant_id filters to one tenant's keys; empty returns every issued
+	// key (tenant-scoped and operator-scoped alike) — an operator-only
+	// view, since no tenant-scoped credential should ever see another
+	// tenant's key metadata (caller-side authorization, same as every
+	// other operator-only RPC in this service).
+	TenantId      string `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAPIKeysRequest) Reset() {
+	*x = ListAPIKeysRequest{}
+	mi := &file_auth_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAPIKeysRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAPIKeysRequest) ProtoMessage() {}
+
+func (x *ListAPIKeysRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAPIKeysRequest.ProtoReflect.Descriptor instead.
+func (*ListAPIKeysRequest) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ListAPIKeysRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+type APIKeyRecord struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	KeyId         string                 `protobuf:"bytes,1,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
+	TenantId      string                 `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"` // empty for an operator-scoped key
+	Name          string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	CreatedAtUnix int64                  `protobuf:"varint,4,opt,name=created_at_unix,json=createdAtUnix,proto3" json:"created_at_unix,omitempty"`
+	Revoked       bool                   `protobuf:"varint,5,opt,name=revoked,proto3" json:"revoked,omitempty"`
+	IsOperator    bool                   `protobuf:"varint,6,opt,name=is_operator,json=isOperator,proto3" json:"is_operator,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *APIKeyRecord) Reset() {
+	*x = APIKeyRecord{}
+	mi := &file_auth_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *APIKeyRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*APIKeyRecord) ProtoMessage() {}
+
+func (x *APIKeyRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use APIKeyRecord.ProtoReflect.Descriptor instead.
+func (*APIKeyRecord) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *APIKeyRecord) GetKeyId() string {
+	if x != nil {
+		return x.KeyId
+	}
+	return ""
+}
+
+func (x *APIKeyRecord) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
+func (x *APIKeyRecord) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *APIKeyRecord) GetCreatedAtUnix() int64 {
+	if x != nil {
+		return x.CreatedAtUnix
+	}
+	return 0
+}
+
+func (x *APIKeyRecord) GetRevoked() bool {
+	if x != nil {
+		return x.Revoked
+	}
+	return false
+}
+
+func (x *APIKeyRecord) GetIsOperator() bool {
+	if x != nil {
+		return x.IsOperator
+	}
+	return false
+}
+
+type ListAPIKeysResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Keys          []*APIKeyRecord        `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAPIKeysResponse) Reset() {
+	*x = ListAPIKeysResponse{}
+	mi := &file_auth_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAPIKeysResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAPIKeysResponse) ProtoMessage() {}
+
+func (x *ListAPIKeysResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAPIKeysResponse.ProtoReflect.Descriptor instead.
+func (*ListAPIKeysResponse) Descriptor() ([]byte, []int) {
+	return file_auth_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ListAPIKeysResponse) GetKeys() []*APIKeyRecord {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
 type MintJWTRequest struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	Subject    string                 `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
@@ -396,7 +573,7 @@ type MintJWTRequest struct {
 
 func (x *MintJWTRequest) Reset() {
 	*x = MintJWTRequest{}
-	mi := &file_auth_proto_msgTypes[6]
+	mi := &file_auth_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -408,7 +585,7 @@ func (x *MintJWTRequest) String() string {
 func (*MintJWTRequest) ProtoMessage() {}
 
 func (x *MintJWTRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[6]
+	mi := &file_auth_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -421,7 +598,7 @@ func (x *MintJWTRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MintJWTRequest.ProtoReflect.Descriptor instead.
 func (*MintJWTRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{6}
+	return file_auth_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MintJWTRequest) GetSubject() string {
@@ -462,7 +639,7 @@ type MintJWTResponse struct {
 
 func (x *MintJWTResponse) Reset() {
 	*x = MintJWTResponse{}
-	mi := &file_auth_proto_msgTypes[7]
+	mi := &file_auth_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -474,7 +651,7 @@ func (x *MintJWTResponse) String() string {
 func (*MintJWTResponse) ProtoMessage() {}
 
 func (x *MintJWTResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[7]
+	mi := &file_auth_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -487,7 +664,7 @@ func (x *MintJWTResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MintJWTResponse.ProtoReflect.Descriptor instead.
 func (*MintJWTResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{7}
+	return file_auth_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *MintJWTResponse) GetToken() string {
@@ -513,7 +690,7 @@ type VerifyJWTRequest struct {
 
 func (x *VerifyJWTRequest) Reset() {
 	*x = VerifyJWTRequest{}
-	mi := &file_auth_proto_msgTypes[8]
+	mi := &file_auth_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -525,7 +702,7 @@ func (x *VerifyJWTRequest) String() string {
 func (*VerifyJWTRequest) ProtoMessage() {}
 
 func (x *VerifyJWTRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[8]
+	mi := &file_auth_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -538,7 +715,7 @@ func (x *VerifyJWTRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyJWTRequest.ProtoReflect.Descriptor instead.
 func (*VerifyJWTRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{8}
+	return file_auth_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *VerifyJWTRequest) GetToken() string {
@@ -563,7 +740,7 @@ type VerifyJWTResponse struct {
 
 func (x *VerifyJWTResponse) Reset() {
 	*x = VerifyJWTResponse{}
-	mi := &file_auth_proto_msgTypes[9]
+	mi := &file_auth_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -575,7 +752,7 @@ func (x *VerifyJWTResponse) String() string {
 func (*VerifyJWTResponse) ProtoMessage() {}
 
 func (x *VerifyJWTResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[9]
+	mi := &file_auth_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -588,7 +765,7 @@ func (x *VerifyJWTResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyJWTResponse.ProtoReflect.Descriptor instead.
 func (*VerifyJWTResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{9}
+	return file_auth_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *VerifyJWTResponse) GetValid() bool {
@@ -640,7 +817,7 @@ type IssueServiceCertRequest struct {
 
 func (x *IssueServiceCertRequest) Reset() {
 	*x = IssueServiceCertRequest{}
-	mi := &file_auth_proto_msgTypes[10]
+	mi := &file_auth_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -652,7 +829,7 @@ func (x *IssueServiceCertRequest) String() string {
 func (*IssueServiceCertRequest) ProtoMessage() {}
 
 func (x *IssueServiceCertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[10]
+	mi := &file_auth_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -665,7 +842,7 @@ func (x *IssueServiceCertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueServiceCertRequest.ProtoReflect.Descriptor instead.
 func (*IssueServiceCertRequest) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{10}
+	return file_auth_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *IssueServiceCertRequest) GetServiceName() string {
@@ -700,7 +877,7 @@ type IssueServiceCertResponse struct {
 
 func (x *IssueServiceCertResponse) Reset() {
 	*x = IssueServiceCertResponse{}
-	mi := &file_auth_proto_msgTypes[11]
+	mi := &file_auth_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -712,7 +889,7 @@ func (x *IssueServiceCertResponse) String() string {
 func (*IssueServiceCertResponse) ProtoMessage() {}
 
 func (x *IssueServiceCertResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_proto_msgTypes[11]
+	mi := &file_auth_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -725,7 +902,7 @@ func (x *IssueServiceCertResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueServiceCertResponse.ProtoReflect.Descriptor instead.
 func (*IssueServiceCertResponse) Descriptor() ([]byte, []int) {
-	return file_auth_proto_rawDescGZIP(), []int{11}
+	return file_auth_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *IssueServiceCertResponse) GetCertPem() []byte {
@@ -779,7 +956,19 @@ const file_auth_proto_rawDesc = "" +
 	"\x13RevokeAPIKeyRequest\x12\x15\n" +
 	"\x06key_id\x18\x01 \x01(\tR\x05keyId\"0\n" +
 	"\x14RevokeAPIKeyResponse\x12\x18\n" +
-	"\arevoked\x18\x01 \x01(\bR\arevoked\"\x89\x01\n" +
+	"\arevoked\x18\x01 \x01(\bR\arevoked\"1\n" +
+	"\x12ListAPIKeysRequest\x12\x1b\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"\xb9\x01\n" +
+	"\fAPIKeyRecord\x12\x15\n" +
+	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12&\n" +
+	"\x0fcreated_at_unix\x18\x04 \x01(\x03R\rcreatedAtUnix\x12\x18\n" +
+	"\arevoked\x18\x05 \x01(\bR\arevoked\x12\x1f\n" +
+	"\vis_operator\x18\x06 \x01(\bR\n" +
+	"isOperator\"G\n" +
+	"\x13ListAPIKeysResponse\x120\n" +
+	"\x04keys\x18\x01 \x03(\v2\x1c.ration.auth.v1.APIKeyRecordR\x04keys\"\x89\x01\n" +
 	"\x0eMintJWTRequest\x12\x18\n" +
 	"\asubject\x18\x01 \x01(\tR\asubject\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1f\n" +
@@ -807,11 +996,12 @@ const file_auth_proto_rawDesc = "" +
 	"\x18IssueServiceCertResponse\x12\x19\n" +
 	"\bcert_pem\x18\x01 \x01(\fR\acertPem\x12\x15\n" +
 	"\x06ca_pem\x18\x02 \x01(\fR\x05caPem\x12&\n" +
-	"\x0fexpires_at_unix\x18\x03 \x01(\x03R\rexpiresAtUnix2\x99\x04\n" +
+	"\x0fexpires_at_unix\x18\x03 \x01(\x03R\rexpiresAtUnix2\xf1\x04\n" +
 	"\x04Auth\x12V\n" +
 	"\vIssueAPIKey\x12\".ration.auth.v1.IssueAPIKeyRequest\x1a#.ration.auth.v1.IssueAPIKeyResponse\x12Y\n" +
 	"\fVerifyAPIKey\x12#.ration.auth.v1.VerifyAPIKeyRequest\x1a$.ration.auth.v1.VerifyAPIKeyResponse\x12Y\n" +
-	"\fRevokeAPIKey\x12#.ration.auth.v1.RevokeAPIKeyRequest\x1a$.ration.auth.v1.RevokeAPIKeyResponse\x12J\n" +
+	"\fRevokeAPIKey\x12#.ration.auth.v1.RevokeAPIKeyRequest\x1a$.ration.auth.v1.RevokeAPIKeyResponse\x12V\n" +
+	"\vListAPIKeys\x12\".ration.auth.v1.ListAPIKeysRequest\x1a#.ration.auth.v1.ListAPIKeysResponse\x12J\n" +
 	"\aMintJWT\x12\x1e.ration.auth.v1.MintJWTRequest\x1a\x1f.ration.auth.v1.MintJWTResponse\x12P\n" +
 	"\tVerifyJWT\x12 .ration.auth.v1.VerifyJWTRequest\x1a!.ration.auth.v1.VerifyJWTResponse\x12e\n" +
 	"\x10IssueServiceCert\x12'.ration.auth.v1.IssueServiceCertRequest\x1a(.ration.auth.v1.IssueServiceCertResponseB(Z&github.com/caelum0x/ration/pkg/pb/authb\x06proto3"
@@ -828,7 +1018,7 @@ func file_auth_proto_rawDescGZIP() []byte {
 	return file_auth_proto_rawDescData
 }
 
-var file_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_auth_proto_goTypes = []any{
 	(*IssueAPIKeyRequest)(nil),       // 0: ration.auth.v1.IssueAPIKeyRequest
 	(*IssueAPIKeyResponse)(nil),      // 1: ration.auth.v1.IssueAPIKeyResponse
@@ -836,31 +1026,37 @@ var file_auth_proto_goTypes = []any{
 	(*VerifyAPIKeyResponse)(nil),     // 3: ration.auth.v1.VerifyAPIKeyResponse
 	(*RevokeAPIKeyRequest)(nil),      // 4: ration.auth.v1.RevokeAPIKeyRequest
 	(*RevokeAPIKeyResponse)(nil),     // 5: ration.auth.v1.RevokeAPIKeyResponse
-	(*MintJWTRequest)(nil),           // 6: ration.auth.v1.MintJWTRequest
-	(*MintJWTResponse)(nil),          // 7: ration.auth.v1.MintJWTResponse
-	(*VerifyJWTRequest)(nil),         // 8: ration.auth.v1.VerifyJWTRequest
-	(*VerifyJWTResponse)(nil),        // 9: ration.auth.v1.VerifyJWTResponse
-	(*IssueServiceCertRequest)(nil),  // 10: ration.auth.v1.IssueServiceCertRequest
-	(*IssueServiceCertResponse)(nil), // 11: ration.auth.v1.IssueServiceCertResponse
+	(*ListAPIKeysRequest)(nil),       // 6: ration.auth.v1.ListAPIKeysRequest
+	(*APIKeyRecord)(nil),             // 7: ration.auth.v1.APIKeyRecord
+	(*ListAPIKeysResponse)(nil),      // 8: ration.auth.v1.ListAPIKeysResponse
+	(*MintJWTRequest)(nil),           // 9: ration.auth.v1.MintJWTRequest
+	(*MintJWTResponse)(nil),          // 10: ration.auth.v1.MintJWTResponse
+	(*VerifyJWTRequest)(nil),         // 11: ration.auth.v1.VerifyJWTRequest
+	(*VerifyJWTResponse)(nil),        // 12: ration.auth.v1.VerifyJWTResponse
+	(*IssueServiceCertRequest)(nil),  // 13: ration.auth.v1.IssueServiceCertRequest
+	(*IssueServiceCertResponse)(nil), // 14: ration.auth.v1.IssueServiceCertResponse
 }
 var file_auth_proto_depIdxs = []int32{
-	0,  // 0: ration.auth.v1.Auth.IssueAPIKey:input_type -> ration.auth.v1.IssueAPIKeyRequest
-	2,  // 1: ration.auth.v1.Auth.VerifyAPIKey:input_type -> ration.auth.v1.VerifyAPIKeyRequest
-	4,  // 2: ration.auth.v1.Auth.RevokeAPIKey:input_type -> ration.auth.v1.RevokeAPIKeyRequest
-	6,  // 3: ration.auth.v1.Auth.MintJWT:input_type -> ration.auth.v1.MintJWTRequest
-	8,  // 4: ration.auth.v1.Auth.VerifyJWT:input_type -> ration.auth.v1.VerifyJWTRequest
-	10, // 5: ration.auth.v1.Auth.IssueServiceCert:input_type -> ration.auth.v1.IssueServiceCertRequest
-	1,  // 6: ration.auth.v1.Auth.IssueAPIKey:output_type -> ration.auth.v1.IssueAPIKeyResponse
-	3,  // 7: ration.auth.v1.Auth.VerifyAPIKey:output_type -> ration.auth.v1.VerifyAPIKeyResponse
-	5,  // 8: ration.auth.v1.Auth.RevokeAPIKey:output_type -> ration.auth.v1.RevokeAPIKeyResponse
-	7,  // 9: ration.auth.v1.Auth.MintJWT:output_type -> ration.auth.v1.MintJWTResponse
-	9,  // 10: ration.auth.v1.Auth.VerifyJWT:output_type -> ration.auth.v1.VerifyJWTResponse
-	11, // 11: ration.auth.v1.Auth.IssueServiceCert:output_type -> ration.auth.v1.IssueServiceCertResponse
-	6,  // [6:12] is the sub-list for method output_type
-	0,  // [0:6] is the sub-list for method input_type
-	0,  // [0:0] is the sub-list for extension type_name
-	0,  // [0:0] is the sub-list for extension extendee
-	0,  // [0:0] is the sub-list for field type_name
+	7,  // 0: ration.auth.v1.ListAPIKeysResponse.keys:type_name -> ration.auth.v1.APIKeyRecord
+	0,  // 1: ration.auth.v1.Auth.IssueAPIKey:input_type -> ration.auth.v1.IssueAPIKeyRequest
+	2,  // 2: ration.auth.v1.Auth.VerifyAPIKey:input_type -> ration.auth.v1.VerifyAPIKeyRequest
+	4,  // 3: ration.auth.v1.Auth.RevokeAPIKey:input_type -> ration.auth.v1.RevokeAPIKeyRequest
+	6,  // 4: ration.auth.v1.Auth.ListAPIKeys:input_type -> ration.auth.v1.ListAPIKeysRequest
+	9,  // 5: ration.auth.v1.Auth.MintJWT:input_type -> ration.auth.v1.MintJWTRequest
+	11, // 6: ration.auth.v1.Auth.VerifyJWT:input_type -> ration.auth.v1.VerifyJWTRequest
+	13, // 7: ration.auth.v1.Auth.IssueServiceCert:input_type -> ration.auth.v1.IssueServiceCertRequest
+	1,  // 8: ration.auth.v1.Auth.IssueAPIKey:output_type -> ration.auth.v1.IssueAPIKeyResponse
+	3,  // 9: ration.auth.v1.Auth.VerifyAPIKey:output_type -> ration.auth.v1.VerifyAPIKeyResponse
+	5,  // 10: ration.auth.v1.Auth.RevokeAPIKey:output_type -> ration.auth.v1.RevokeAPIKeyResponse
+	8,  // 11: ration.auth.v1.Auth.ListAPIKeys:output_type -> ration.auth.v1.ListAPIKeysResponse
+	10, // 12: ration.auth.v1.Auth.MintJWT:output_type -> ration.auth.v1.MintJWTResponse
+	12, // 13: ration.auth.v1.Auth.VerifyJWT:output_type -> ration.auth.v1.VerifyJWTResponse
+	14, // 14: ration.auth.v1.Auth.IssueServiceCert:output_type -> ration.auth.v1.IssueServiceCertResponse
+	8,  // [8:15] is the sub-list for method output_type
+	1,  // [1:8] is the sub-list for method input_type
+	1,  // [1:1] is the sub-list for extension type_name
+	1,  // [1:1] is the sub-list for extension extendee
+	0,  // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_auth_proto_init() }
@@ -874,7 +1070,7 @@ func file_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_auth_proto_rawDesc), len(file_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

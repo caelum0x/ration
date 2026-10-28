@@ -22,6 +22,16 @@ service Auth {
   // RevokeAPIKey immediately invalidates a key; VerifyAPIKey will report
   // it invalid from that point on, even if the secret is still correct.
   rpc RevokeAPIKey(RevokeAPIKeyRequest) returns (RevokeAPIKeyResponse);
+  // ListAPIKeys returns every issued key's metadata (never the plaintext
+  // secret, which is never stored anywhere to return) — the missing
+  // read side of IssueAPIKey/RevokeAPIKey. Without this, an operator who
+  // issued a key in one session (or inherited a deployment someone else
+  // set up) has no way to discover what key_ids even exist to revoke, or
+  // to audit which keys are still live versus already revoked; they can
+  // only ever act on a key_id they personally still have printed
+  // somewhere. Filterable by tenant_id (empty returns every key,
+  // operator keys included).
+  rpc ListAPIKeys(ListAPIKeysRequest) returns (ListAPIKeysResponse);
 
   // MintJWT issues a signed, short-lived bearer token for a subject
   // (e.g. a human operator driving the TUI/CLI) scoped to a tenant.
@@ -89,6 +99,30 @@ message RevokeAPIKeyRequest {
 
 message RevokeAPIKeyResponse {
   bool revoked = 1;
+}
+
+message ListAPIKeysRequest {
+  // tenant_id filters to one tenant's keys; empty returns every issued
+  // key (tenant-scoped and operator-scoped alike) — an operator-only
+  // view, since no tenant-scoped credential should ever see another
+  // tenant's key metadata (caller-side authorization, same as every
+  // other operator-only RPC in this service).
+  string tenant_id = 1;
+}
+
+message APIKeyRecord {
+  string key_id = 1;
+  string tenant_id = 2; // empty for an operator-scoped key
+  string name = 3;
+  int64 created_at_unix = 4;
+  bool revoked = 5;
+  bool is_operator = 6;
+  // secret is deliberately absent: it was never stored anywhere after
+  // IssueAPIKeyResponse returned it once, so there is nothing to list.
+}
+
+message ListAPIKeysResponse {
+  repeated APIKeyRecord keys = 1;
 }
 
 message MintJWTRequest {

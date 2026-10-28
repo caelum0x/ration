@@ -68,6 +68,26 @@ func (s *Server) RevokeAPIKey(ctx context.Context, req *authpb.RevokeAPIKeyReque
 	return &authpb.RevokeAPIKeyResponse{Revoked: true}, nil
 }
 
+// ListAPIKeys implements authpb.AuthServer — the read side IssueAPIKey/
+// RevokeAPIKey were missing (see proto/auth.proto's doc comment on the
+// RPC): never returns a plaintext secret, since none is ever stored
+// after IssueAPIKey returns it once.
+func (s *Server) ListAPIKeys(ctx context.Context, req *authpb.ListAPIKeysRequest) (*authpb.ListAPIKeysResponse, error) {
+	records := s.keys.List(req.GetTenantId())
+	keys := make([]*authpb.APIKeyRecord, 0, len(records))
+	for _, rec := range records {
+		keys = append(keys, &authpb.APIKeyRecord{
+			KeyId:         rec.KeyID,
+			TenantId:      rec.TenantID,
+			Name:          rec.Name,
+			CreatedAtUnix: rec.CreatedAtUnix,
+			Revoked:       rec.Revoked,
+			IsOperator:    rec.IsOperator,
+		})
+	}
+	return &authpb.ListAPIKeysResponse{Keys: keys}, nil
+}
+
 // MintJWT implements authpb.AuthServer.
 func (s *Server) MintJWT(ctx context.Context, req *authpb.MintJWTRequest) (*authpb.MintJWTResponse, error) {
 	token, expiresAt, err := s.jwt.Mint(req.GetSubject(), req.GetTenantId(), time.Duration(req.GetTtlSeconds())*time.Second, req.GetIsOperator())

@@ -147,3 +147,42 @@ compile-time issues):
    `ration seed` was also extended to fund each demo tenant with settled
    opening capital through this same path, so the judge-facing demo
    starts with real headroom instead of a guaranteed decline.
+
+## Updates since initial submission (rounds 2-5, through 2026-10-29)
+
+This section stays short on purpose — full detail per round is in
+`BUILD-LOG-2026-10-23.md` and `plans/airwallex-hackathon.md` (both
+outside this repo's judge-facing scope for the latter) — but the "What's
+mocked vs. real" section above predates all of it and would otherwise
+undersell real work:
+
+- **Encryption at rest**: `ledger-core`'s WAL and its SQLite index's
+  free-text columns (deposit references, entry memos, agent decision
+  rationale/trigger/policy-snapshot) are AES-256-GCM-encrypted under
+  `RATION_LEDGER_ENCRYPTION_KEY` — verified live by confirming the
+  on-disk files are genuine ciphertext, not just that encryption code
+  exists.
+- **Tenant-scoped authorization end to end**: `RATION_GATEWAY_REQUIRE_
+  TENANT_AUTH` and `RATION_LEDGER_REQUIRE_TENANT_AUTH` both default to
+  **true** now (not opt-in false) — `cli`/`tui`/`agent` each mint an
+  operator credential at startup and attach it to every call, gateway's
+  `GetCard`/`AdjustCardLimit` resolve `card_id` → tenant via
+  `internal/cardtenant`, `StreamActivity` has its own stream
+  interceptor, and `ledger-core`'s own gRPC surface enforces the same
+  check directly — closing the "cli/tui/agent bypass gateway entirely"
+  gap `docs/THREAT-MODEL.md` used to name as the biggest one.
+- **API-key lifecycle, now complete**: `ration apikey issue` mints a
+  credential for `sdk/go/ration` callers, `ration apikey revoke`
+  invalidates one immediately (verified live: a revoked key's next
+  `IssueCard` call gets `Unauthenticated: ... revoked`), and `ration
+  apikey list` (this round) is the missing read side — an operator can
+  see every issued key's tenant, name, creation time, and revocation
+  state without needing to have personally kept the key_id from when it
+  was minted. No RPC in this family ever returns a plaintext secret
+  after `issue`'s one-time response.
+- **`docker compose up --build` actually brought up the full 12-service
+  stack for the first time** — five services previously crash-looped on
+  missing `AUTH_GRPC_ADDR`/`AUTH_ADDR` env wiring, now fixed.
+- A real ~68s demo video exists locally (`demo-video/`, gitignored —
+  uploading it and the HackerEarth submission click-through are the
+  two owner-only steps left).

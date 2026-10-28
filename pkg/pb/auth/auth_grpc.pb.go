@@ -22,6 +22,7 @@ const (
 	Auth_IssueAPIKey_FullMethodName      = "/ration.auth.v1.Auth/IssueAPIKey"
 	Auth_VerifyAPIKey_FullMethodName     = "/ration.auth.v1.Auth/VerifyAPIKey"
 	Auth_RevokeAPIKey_FullMethodName     = "/ration.auth.v1.Auth/RevokeAPIKey"
+	Auth_ListAPIKeys_FullMethodName      = "/ration.auth.v1.Auth/ListAPIKeys"
 	Auth_MintJWT_FullMethodName          = "/ration.auth.v1.Auth/MintJWT"
 	Auth_VerifyJWT_FullMethodName        = "/ration.auth.v1.Auth/VerifyJWT"
 	Auth_IssueServiceCert_FullMethodName = "/ration.auth.v1.Auth/IssueServiceCert"
@@ -49,6 +50,16 @@ type AuthClient interface {
 	// RevokeAPIKey immediately invalidates a key; VerifyAPIKey will report
 	// it invalid from that point on, even if the secret is still correct.
 	RevokeAPIKey(ctx context.Context, in *RevokeAPIKeyRequest, opts ...grpc.CallOption) (*RevokeAPIKeyResponse, error)
+	// ListAPIKeys returns every issued key's metadata (never the plaintext
+	// secret, which is never stored anywhere to return) — the missing
+	// read side of IssueAPIKey/RevokeAPIKey. Without this, an operator who
+	// issued a key in one session (or inherited a deployment someone else
+	// set up) has no way to discover what key_ids even exist to revoke, or
+	// to audit which keys are still live versus already revoked; they can
+	// only ever act on a key_id they personally still have printed
+	// somewhere. Filterable by tenant_id (empty returns every key,
+	// operator keys included).
+	ListAPIKeys(ctx context.Context, in *ListAPIKeysRequest, opts ...grpc.CallOption) (*ListAPIKeysResponse, error)
 	// MintJWT issues a signed, short-lived bearer token for a subject
 	// (e.g. a human operator driving the TUI/CLI) scoped to a tenant.
 	MintJWT(ctx context.Context, in *MintJWTRequest, opts ...grpc.CallOption) (*MintJWTResponse, error)
@@ -99,6 +110,16 @@ func (c *authClient) RevokeAPIKey(ctx context.Context, in *RevokeAPIKeyRequest, 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RevokeAPIKeyResponse)
 	err := c.cc.Invoke(ctx, Auth_RevokeAPIKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authClient) ListAPIKeys(ctx context.Context, in *ListAPIKeysRequest, opts ...grpc.CallOption) (*ListAPIKeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAPIKeysResponse)
+	err := c.cc.Invoke(ctx, Auth_ListAPIKeys_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -157,6 +178,16 @@ type AuthServer interface {
 	// RevokeAPIKey immediately invalidates a key; VerifyAPIKey will report
 	// it invalid from that point on, even if the secret is still correct.
 	RevokeAPIKey(context.Context, *RevokeAPIKeyRequest) (*RevokeAPIKeyResponse, error)
+	// ListAPIKeys returns every issued key's metadata (never the plaintext
+	// secret, which is never stored anywhere to return) — the missing
+	// read side of IssueAPIKey/RevokeAPIKey. Without this, an operator who
+	// issued a key in one session (or inherited a deployment someone else
+	// set up) has no way to discover what key_ids even exist to revoke, or
+	// to audit which keys are still live versus already revoked; they can
+	// only ever act on a key_id they personally still have printed
+	// somewhere. Filterable by tenant_id (empty returns every key,
+	// operator keys included).
+	ListAPIKeys(context.Context, *ListAPIKeysRequest) (*ListAPIKeysResponse, error)
 	// MintJWT issues a signed, short-lived bearer token for a subject
 	// (e.g. a human operator driving the TUI/CLI) scoped to a tenant.
 	MintJWT(context.Context, *MintJWTRequest) (*MintJWTResponse, error)
@@ -191,6 +222,9 @@ func (UnimplementedAuthServer) VerifyAPIKey(context.Context, *VerifyAPIKeyReques
 }
 func (UnimplementedAuthServer) RevokeAPIKey(context.Context, *RevokeAPIKeyRequest) (*RevokeAPIKeyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeAPIKey not implemented")
+}
+func (UnimplementedAuthServer) ListAPIKeys(context.Context, *ListAPIKeysRequest) (*ListAPIKeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAPIKeys not implemented")
 }
 func (UnimplementedAuthServer) MintJWT(context.Context, *MintJWTRequest) (*MintJWTResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MintJWT not implemented")
@@ -276,6 +310,24 @@ func _Auth_RevokeAPIKey_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Auth_ListAPIKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAPIKeysRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServer).ListAPIKeys(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Auth_ListAPIKeys_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServer).ListAPIKeys(ctx, req.(*ListAPIKeysRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Auth_MintJWT_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(MintJWTRequest)
 	if err := dec(in); err != nil {
@@ -348,6 +400,10 @@ var Auth_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RevokeAPIKey",
 			Handler:    _Auth_RevokeAPIKey_Handler,
+		},
+		{
+			MethodName: "ListAPIKeys",
+			Handler:    _Auth_ListAPIKeys_Handler,
 		},
 		{
 			MethodName: "MintJWT",

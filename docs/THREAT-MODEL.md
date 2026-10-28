@@ -294,39 +294,37 @@ single source of truth.
 
 ## Known gaps (precise, scoped — not glossed over)
 
-1. **No tenant-scoped authorization anywhere, still — partially
-   mitigated on gateway's own surface, opt-in, off by default.** Every
-   RPC that takes a `tenant_id` trusts whatever `tenant_id` the caller
-   supplies by default — there is no notion of "this caller is only
-   allowed to act as tenant X" unless the mitigation below is switched
-   on. `services/gateway/internal/tenantauth` now calls
-   `auth.VerifyAPIKey`/`VerifyJWT` (via `internal/authclient`) on every
-   unary RPC on gateway's own `gateway.proto` surface that carries a
-   `tenant_id` field, and rejects a mismatch between the verified
-   identity's `tenant_id` and the request's own (`codes.PermissionDenied`)
-   or a missing/invalid credential (`codes.Unauthenticated`) — gated by
-   `RATION_GATEWAY_REQUIRE_TENANT_AUTH`, **false by default** (same
-   opt-in pattern as `GATEWAY_MTLS_ENABLED`), because the demo/CLI/TUI
-   flows don't present a credential on every call yet; flipping the
-   default on today would turn every demo RPC into a rejection, not a
-   safer demo. Three precise residual gaps, named rather than glossed
-   over: (a) `GetCard`/`AdjustCardLimit` key off `card_id`, not
-   `tenant_id`, so `tenantauth` — like `internal/ratelimit`'s identical,
-   already-documented limitation — passes them through unchecked;
-   (b) `StreamActivity` is a streaming RPC, outside this interceptor's
-   scope (it only wraps `grpc.ChainUnaryInterceptor`), and still allows
-   an empty `tenant_id` ("all tenants") with no check at all; (c) the
-   biggest one — `cli`/`tui`/`agent` can all dial `ledger-core` directly
-   (see actor 1 above), bypassing `gateway` and `tenantauth` entirely,
-   so this mitigation only closes the gap for traffic that actually
-   goes through `gateway`, not the system's full tenant-authorization
-   gap. **Precise TODO**: wire `services/cli`/`services/tui` to call
-   `auth.IssueAPIKey`/`MintJWT` once and present the result as
-   `x-api-key`/`authorization: Bearer <jwt>` metadata on every gateway
-   call, flip `RATION_GATEWAY_REQUIRE_TENANT_AUTH` to true by default
-   once they do, and either add the same check to `ledger-core`'s own
-   gRPC surface or stop letting `cli`/`tui`/`agent` dial it directly —
-   before any of this is safe to run with real tenants/real money.
+1. ~~No tenant-scoped authorization anywhere, still — partially
+   mitigated on gateway's own surface, opt-in, off by default.~~
+   **Fixed, as of the round that shipped `apikey issue`/`revoke`/`list`
+   (2026-10-28/29 — see `BUILD-LOG-2026-10-23.md`'s later rounds):**
+   `services/gateway/internal/tenantauth` calls `auth.VerifyAPIKey`/
+   `VerifyJWT` on every unary RPC carrying a `tenant_id`, gated by
+   `RATION_GATEWAY_REQUIRE_TENANT_AUTH` — now **true by default**
+   (`services/gateway/internal/config/config.go`), not false: `cli`,
+   `tui` and `agent` each mint an operator-scoped credential at startup
+   (each service's own `internal/authclient`) and attach it to every
+   gateway call, so a bare `scripts/run-demo.sh` is a credentialed demo,
+   not an all-requests-rejected one. All three residual sub-gaps this
+   item used to name are closed too: (a) `GetCard`/`AdjustCardLimit`
+   now resolve `card_id` → owning `tenant_id` via
+   `internal/cardtenant.Cache` (TTL-cached against card-issuance) before
+   the identical check — wired in `services/gateway/cmd/gateway/main.go`,
+   not just available and unused; (b) `StreamActivity` has its own
+   `tenantauth.StreamServerInterceptor`, rejecting an empty
+   ("all tenants") subscription for any non-operator credential; (c) the
+   "biggest one" — `cli`/`tui`/`agent` dialing `ledger-core` directly,
+   bypassing `gateway` — is closed by `services/ledger-core/src/
+   tenantauth.rs`, which every `LedgerCore` RPC handler in `src/grpc.rs`
+   calls directly (mirroring gateway's Go interceptor, since Rust has no
+   proto-reflection equivalent), gated by its own
+   `RATION_LEDGER_REQUIRE_TENANT_AUTH` (also true by default,
+   `src/main.rs`). Residual, intentionally not closed: `services/auth`'s
+   own `internal/apikey.Store` is in-memory only (see item on API-key
+   persistence in `BUILD-LOG-2026-10-23.md`'s round 4 notes) — a
+   revoked/issued key's state doesn't survive an `auth` restart, which
+   is a real production gap, just a different one than this item
+   originally named.
 2. **`audit-log` trusts the claimed `source_service` field verbatim —
    fixed for the mTLS-enabled case, unavoidable otherwise.**
    `AppendRequest.source_service` is attacker-controlled data from
@@ -374,15 +372,30 @@ single source of truth.
    auto-rotated certs — `infra/dev-ca/generate-dev-ca.sh`'s own header
    says this explicitly; repeated here because it's load-bearing for
    this entire threat model's mTLS-based mitigations.
-6. **No encryption at rest** for `ledger-core`'s WAL/SQLite index or
-   `audit-log`'s append file — a host/disk-level compromise (not an RPC
-   one) reads everything in plaintext. Out of scope for section 8
-   specifically (it's a storage-layer concern, not a service-boundary
-   one) but worth naming here rather than implying this document covers
-   every threat.
-7. **Terminal-escape-sequence injection via `rationale`/`memo` display**
-   in `tui`/`cli` (actor 4's gap row above) — low severity (local
-   annoyance, not a money-moving path) but unmitigated today.
+6. ~~No encryption at rest for `ledger-core`'s WAL/SQLite index or
+   `audit-log`'s append file.~~ **Fixed for ledger-core, open for
+   audit-log.** `ledger-core`'s WAL and the free-text SQLite columns
+   that previously held plaintext (`deposit.external_ref`,
+   `ledger_entries.reference`/`memo`, `agent_decisions.trigger`/
+   `rationale`/`policy_snapshot_json`) are now AES-256-GCM-encrypted
+   under `RATION_LEDGER_ENCRYPTION_KEY` — a host/disk-level read of
+   `data/ledger.wal`/`data/ledger.db` sees ciphertext, verified live by
+   `grep`/`strings` both failing to find seeded tenant names on disk.
+   `audit-log`'s own append file remains plaintext — not yet extended
+   to the same scheme; still a real, open gap for that one store.
+7. ~~Terminal-escape-sequence injection via `rationale`/`memo` display
+   in `tui`/`cli`.~~ **Fixed.** `pkg/textsanitize.StripControlChars`
+   strips C0/C1 control characters (including ESC, so no ANSI/VT100
+   sequence survives) from this exact text before it reaches either
+   surface — `services/cli/cmd/ration/status.go`'s
+   `sanitizeControlChars` wrapper and `services/tui/internal/view/
+   decisions.go` both call it. The gateway's judge-facing HTML
+   dashboard (`services/gateway/internal/httpapi/dashboard.html`,
+   added after this item was first written) renders the same
+   `rationale` field into a browser instead of a terminal — a
+   different risk (HTML/script injection, not ANSI escapes) — and is
+   independently covered there by its own `escapeHTML()` on every
+   interpolated field, not by this package.
 
 ## What mTLS is, and is not, a defense against (repeated from `pkg/mtls`)
 
