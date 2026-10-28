@@ -106,3 +106,25 @@ func (c *Client) IssueAPIKey(ctx context.Context, tenantID, name string, isOpera
 	}
 	return resp, nil
 }
+
+// RevokeAPIKey immediately invalidates keyID via auth.RevokeAPIKey, so a
+// subsequent VerifyAPIKey (gateway's internal/tenantauth interceptor, on
+// every request an external caller makes) reports it invalid. This is
+// the real missing counterpart to IssueAPIKey above: before this, a
+// platform customer's leaked/rotated sdk/go/ration credential (minted
+// by `ration apikey issue`) could never actually be turned off again —
+// services/auth/internal/grpcserver.Server already implemented
+// RevokeAPIKey (proto/auth.proto's RPC, backed by
+// internal/apikey.Store.Revoke), but nothing in this repo had ever
+// called it.
+func (c *Client) RevokeAPIKey(ctx context.Context, keyID string) (revoked bool, err error) {
+	rctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	resp, err := c.stub.RevokeAPIKey(rctx, &authpb.RevokeAPIKeyRequest{
+		KeyId: keyID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("authclient: revoke API key: %w", err)
+	}
+	return resp.GetRevoked(), nil
+}
