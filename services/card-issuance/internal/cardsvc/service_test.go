@@ -2,6 +2,7 @@ package cardsvc
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	cardissuancepb "github.com/caelum0x/ration/pkg/pb/cardissuance"
@@ -11,12 +12,19 @@ import (
 )
 
 type fakeLedger struct {
-	tenant         *ledgerpb.Tenant
-	allowed        bool
-	headroom       int64
+	tenant   *ledgerpb.Tenant
+	allowed  bool
+	headroom int64
+	checkErr error
+	applyErr error
+
+	// mu guards appliedEntries: Round 24's own concurrency test fires
+	// genuinely concurrent ApplyEntry calls against this fake, so a
+	// plain unsynchronized append here would itself be a data race
+	// under `go test -race`, independent of whatever cardsvc.Service
+	// does or doesn't lock.
+	mu             sync.Mutex
 	appliedEntries []*ledgerpb.ApplyEntryRequest
-	checkErr       error
-	applyErr       error
 }
 
 func (f *fakeLedger) GetTenant(ctx context.Context, tenantID string) (*ledgerpb.Tenant, error) {
@@ -34,8 +42,18 @@ func (f *fakeLedger) ApplyEntry(ctx context.Context, req *ledgerpb.ApplyEntryReq
 	if f.applyErr != nil {
 		return nil, f.applyErr
 	}
+	f.mu.Lock()
 	f.appliedEntries = append(f.appliedEntries, req)
+	f.mu.Unlock()
 	return &ledgerpb.ApplyEntryResponse{Entry: &ledgerpb.LedgerEntry{Id: "entry_test"}}, nil
+}
+
+func (f *fakeLedger) entries() []*ledgerpb.ApplyEntryRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*ledgerpb.ApplyEntryRequest, len(f.appliedEntries))
+	copy(out, f.appliedEntries)
+	return out
 }
 
 func TestIssueCard_Success(t *testing.T) {
@@ -236,6 +254,86 @@ func TestAdjustCardLimit_NotFound(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("AdjustCardLimit() expected error for unknown card, got nil")
+	}
+}
+
+// TestAdjustCardLimit_ConcurrentIncreasesStayConsistentWithLedger is
+// Round 24's regression test for the race lockCard's doc comment
+// documents and this round's BUILD-LOG/plan entry reproduced live
+// against the real running stack: two concurrent AdjustCardLimit calls
+// on the SAME card, both increasing the limit, must leave
+// card.LimitMinorUnits exactly equal to the card's original limit plus
+// the sum of every HOLD amount ledger-core actually applied for it —
+// never diverging to just one call's absolute new_limit_minor_units
+// while the other's delta silently vanishes from the cached field
+// (even though ledger-core itself still holds it, unreachably, since
+// CloseCard/a later decrease only ever release
+// card.GetLimitMinorUnits()).
+func TestAdjustCardLimit_ConcurrentIncreasesStayConsistentWithLedger(t *testing.T) {
+	aw := airwallex.NewMock()
+	ledger := &fakeLedger{
+		tenant:   &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD"},
+		allowed:  true,
+		headroom: 1_000_000,
+	}
+	svc := New(aw, ledger)
+
+	const initialLimit = int64(100_000)
+	card, err := svc.IssueCard(context.Background(), &cardissuancepb.IssueCardRequest{
+		TenantId:        "tenant_1",
+		CardholderName:  "Concurrent Adjuster",
+		LimitMinorUnits: initialLimit,
+		Currency:        "USD",
+	})
+	if err != nil {
+		t.Fatalf("IssueCard() error = %v", err)
+	}
+
+	newLimits := []int64{200_000, 300_000}
+	var wg sync.WaitGroup
+	errs := make([]error, len(newLimits))
+	for i, newLimit := range newLimits {
+		wg.Add(1)
+		go func(idx int, limit int64) {
+			defer wg.Done()
+			_, err := svc.AdjustCardLimit(context.Background(), &cardissuancepb.AdjustCardLimitRequest{
+				CardId:             card.GetId(),
+				NewLimitMinorUnits: limit,
+				Reason:             "concurrent-increase",
+			})
+			errs[idx] = err
+		}(i, newLimit)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("AdjustCardLimit() call %d error = %v", i, err)
+		}
+	}
+
+	// Sum every HOLD (issuance + both increases) and every RELEASE
+	// ledger-core actually saw for this card's reference — this is
+	// what the tenant's real held balance for this card is, regardless
+	// of what cardsvc's own cached field says.
+	var netHeld int64
+	for _, e := range ledger.entries() {
+		switch e.GetType() {
+		case commonpb.LedgerEntryType_LEDGER_ENTRY_TYPE_HOLD:
+			netHeld += e.GetAmount().GetMinorUnits()
+		case commonpb.LedgerEntryType_LEDGER_ENTRY_TYPE_RELEASE:
+			netHeld -= e.GetAmount().GetMinorUnits()
+		}
+	}
+
+	got, err := svc.GetCard(context.Background(), card.GetId())
+	if err != nil {
+		t.Fatalf("GetCard() error = %v", err)
+	}
+	if got.GetLimitMinorUnits() != netHeld {
+		t.Errorf("card.LimitMinorUnits = %d, want %d (== sum of every HOLD/RELEASE ledger-core actually applied for this card) — "+
+			"a mismatch means real held funds are now unreachable by any future AdjustCardLimit/CloseCard on this card",
+			got.GetLimitMinorUnits(), netHeld)
 	}
 }
 

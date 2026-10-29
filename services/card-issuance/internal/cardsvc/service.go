@@ -48,6 +48,26 @@ type Service struct {
 	mu    sync.RWMutex
 	cards map[string]*cardissuancepb.Card
 
+	// cardLocks holds one *sync.Mutex per card id, lazily created,
+	// never removed (same never-shrinks lifetime as cards itself). It
+	// serializes AdjustCardLimit/CloseCard end-to-end (lock → read the
+	// card's current LimitMinorUnits → call Airwallex → call
+	// ledger-core's ApplyEntry → write the card's new
+	// LimitMinorUnits/Status → unlock) for one specific card id, while
+	// leaving every other card id free to proceed concurrently. See
+	// lockCard's doc comment for the race this closes — without it,
+	// two concurrent mutations of the SAME card read the same stale
+	// "before" limit, so ledger-core correctly applies both deltas
+	// (its own apply_entry is atomic and additive) but this service's
+	// own cached LimitMinorUnits field ends up holding only the LAST
+	// writer's value, permanently diverging from the real cumulative
+	// amount ledger-core now holds for that card's reference — funds
+	// that CloseCard/AdjustCardLimit's decrease path can then never
+	// fully release, because both only ever release
+	// card.GetLimitMinorUnits() (the wrong, smaller cached value), not
+	// whatever ledger-core actually holds.
+	cardLocks sync.Map // cardID string -> *sync.Mutex
+
 	// persistPath is the on-disk file EnablePersistence was given, or
 	// "" (the default: in-memory only, exactly this package's original
 	// behavior) if it was never called — every existing caller
@@ -273,6 +293,46 @@ func (s *Service) IssueCard(ctx context.Context, req *cardissuancepb.IssueCardRe
 	return cloneCard(card), nil
 }
 
+// lockCard returns an unlock function that must be called (typically via
+// defer) to release the per-card mutex for cardID, blocking until any
+// other in-flight AdjustCardLimit/CloseCard for the SAME card id has
+// fully finished (including its own Airwallex call, ledger-core
+// ApplyEntry call, and cached-field update).
+//
+// Reproduced live, without this lock, against the real running stack
+// (mock Airwallex, real ledger-core): issued a card with a $1,000.00
+// limit (a real HOLD), then fired two concurrent AdjustCardLimit calls
+// on that same card id — one requesting $2,000.00, the other
+// $3,000.00 — both sharing one gRPC connection so they reached this
+// service's goroutines genuinely concurrently. Both succeeded. Both
+// deltas (+$1,000.00 and +$2,000.00) were correctly, atomically applied
+// by ledger-core — the tenant's real Held balance became $4,000.00 —
+// but this service's own card.LimitMinorUnits ended up at whichever
+// call's absolute new_limit_minor_units happened to write last
+// ($2,000.00), not the $4,000.00 actually held. The next CloseCard on
+// that card then released only $2,000.00 (card.GetLimitMinorUnits(),
+// the wrong cached value) — leaving $2,000.00 permanently stuck in the
+// tenant's Held balance with zero live cards referencing it anymore,
+// since every release path in this file is keyed off a card's own
+// cached LimitMinorUnits, never off ledger-core's real per-reference
+// total. That $2,000.00 could never be recovered by any code path in
+// this repo.
+//
+// Serializing the full AdjustCardLimit/CloseCard critical section per
+// card id closes this: the second concurrent call now blocks until the
+// first has committed its own ledger mutation AND updated
+// card.LimitMinorUnits, so it always computes its delta against the
+// real, current value — the two increases above would now correctly
+// compound to a final cached limit of $4,000.00, matching ledger-core's
+// real Held balance exactly, the same way a single caller issuing two
+// sequential adjustments always has.
+func (s *Service) lockCard(cardID string) (unlock func()) {
+	muIface, _ := s.cardLocks.LoadOrStore(cardID, &sync.Mutex{})
+	cardMu := muIface.(*sync.Mutex)
+	cardMu.Lock()
+	return cardMu.Unlock
+}
+
 // suspendAfterFailure best-effort suspends an Airwallex card that was
 // just created but cannot be safely backed by a ledger hold. Errors here
 // are deliberately not surfaced to the caller: the primary error (the
@@ -316,6 +376,14 @@ func (s *Service) AdjustCardLimit(ctx context.Context, req *cardissuancepb.Adjus
 	if req.GetNewLimitMinorUnits() < 0 {
 		return nil, fmt.Errorf("cardsvc: new_limit_minor_units must be >= 0, got %d", req.GetNewLimitMinorUnits())
 	}
+
+	// See lockCard's doc comment: this serializes the entire method
+	// (read → Airwallex → ledger → write) against any other concurrent
+	// AdjustCardLimit/CloseCard for this exact card id, so the oldLimit
+	// read below is never stale relative to another in-flight mutation
+	// of the same card.
+	unlock := s.lockCard(req.GetCardId())
+	defer unlock()
 
 	s.mu.Lock()
 	card, ok := s.cards[req.GetCardId()]
@@ -412,6 +480,14 @@ func (s *Service) AdjustCardLimit(ctx context.Context, req *cardissuancepb.Adjus
 // hold simply stays in place until a retry successfully releases it,
 // instead of being leaked twice.
 func (s *Service) CloseCard(ctx context.Context, cardID string) (*cardissuancepb.Card, error) {
+	// Same per-card serialization as AdjustCardLimit, and for the same
+	// reason — see lockCard's doc comment. Without it, a CloseCard
+	// racing a concurrent AdjustCardLimit (or another CloseCard) on the
+	// same card id can read card.GetLimitMinorUnits() before the other
+	// call's own cached-field update lands, releasing the wrong amount.
+	unlock := s.lockCard(cardID)
+	defer unlock()
+
 	s.mu.Lock()
 	card, ok := s.cards[cardID]
 	s.mu.Unlock()
