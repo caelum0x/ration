@@ -21,11 +21,12 @@ const (
 )
 
 const (
-	defaultLedgerAddr  = "localhost:7001"
-	defaultGatewayAddr = "localhost:7002"
-	defaultAuthAddr    = "localhost:7010"
-	defaultAuditAddr   = "localhost:7003"
-	defaultRPCTimeout  = 10 * time.Second
+	defaultLedgerAddr         = "localhost:7001"
+	defaultGatewayAddr        = "localhost:7002"
+	defaultAuthAddr           = "localhost:7010"
+	defaultAuditAddr          = "localhost:7003"
+	defaultTenantRegistryAddr = "localhost:7011"
+	defaultRPCTimeout         = 10 * time.Second
 
 	// operatorCredentialTTL bounds how long the CLI's one minted
 	// operator JWT (see internal/authclient.MintOperatorJWT) stays
@@ -38,11 +39,12 @@ const (
 
 // globalFlags holds the persistent flag values shared by every subcommand.
 type globalFlags struct {
-	ledgerAddr  string
-	gatewayAddr string
-	authAddr    string
-	auditAddr   string
-	timeout     time.Duration
+	ledgerAddr         string
+	gatewayAddr        string
+	authAddr           string
+	auditAddr          string
+	tenantRegistryAddr string
+	timeout            time.Duration
 }
 
 func envOrDefault(key, fallback string) string {
@@ -78,6 +80,9 @@ the resulting agent decisions — all live, from the terminal.`,
 	root.PersistentFlags().StringVar(&flags.auditAddr, "audit-addr",
 		envOrDefault("AUDIT_LOG_GRPC_ADDR", defaultAuditAddr),
 		"audit-log gRPC address, used by audit-check (env AUDIT_LOG_GRPC_ADDR)")
+	root.PersistentFlags().StringVar(&flags.tenantRegistryAddr, "tenant-registry-addr",
+		envOrDefault("TENANT_REGISTRY_GRPC_ADDR", defaultTenantRegistryAddr),
+		"tenant-registry gRPC address, used by tenant create/list (env TENANT_REGISTRY_GRPC_ADDR)")
 	root.PersistentFlags().DurationVar(&flags.timeout, "timeout", defaultRPCTimeout,
 		"per-RPC timeout")
 
@@ -88,6 +93,7 @@ the resulting agent decisions — all live, from the terminal.`,
 		newAuditCheckCmd(flags),
 		newAPIKeyCmd(flags),
 		newCardCmd(flags),
+		newTenantCmd(flags),
 	)
 
 	return root
