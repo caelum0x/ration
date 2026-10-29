@@ -87,6 +87,7 @@ the resulting agent decisions — all live, from the terminal.`,
 		newStatusCmd(flags),
 		newAuditCheckCmd(flags),
 		newAPIKeyCmd(flags),
+		newCardCmd(flags),
 	)
 
 	return root
