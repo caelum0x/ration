@@ -103,6 +103,53 @@ func TestIssueCard_InsufficientHeadroomDoesNotPersistOrHold(t *testing.T) {
 	}
 }
 
+func TestIssueCard_CurrencyMismatchRejectedUpfront(t *testing.T) {
+	aw := airwallex.NewMock()
+	ledger := &fakeLedger{
+		tenant:   &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD"},
+		allowed:  true,
+		headroom: 10000,
+	}
+	svc := New(aw, ledger)
+
+	// A zero-limit card never reaches CheckReserveFloor/ApplyEntry at
+	// all (see IssueCard's own early-return for LimitMinorUnits == 0),
+	// which is exactly the case that let a mismatched --currency slip
+	// through before this test existed: ApplyEntry's currency check
+	// (the only thing that used to catch this) is never even called.
+	_, err := svc.IssueCard(context.Background(), &cardissuancepb.IssueCardRequest{
+		TenantId:        "tenant_1",
+		CardholderName:  "Ada Lovelace",
+		LimitMinorUnits: 0,
+		Currency:        "EUR",
+	})
+	if err == nil {
+		t.Fatal("IssueCard() expected error for currency mismatch, got nil")
+	}
+	cards, _ := svc.ListCards(context.Background(), "tenant_1")
+	if len(cards) != 0 {
+		t.Errorf("len(cards) = %d, want 0 (mismatched-currency card should never be created)", len(cards))
+	}
+
+	// Confirm no Airwallex card was ever created for the rejected
+	// request either (not just that card-issuance's own metadata store
+	// stayed empty): Mock's card IDs are a monotonic counter, so a
+	// subsequent valid issuance getting id 1 proves the rejected call
+	// above never reached aw.IssueCard.
+	validCard, err := svc.IssueCard(context.Background(), &cardissuancepb.IssueCardRequest{
+		TenantId:        "tenant_1",
+		CardholderName:  "Ada Lovelace",
+		LimitMinorUnits: 0,
+		Currency:        "USD",
+	})
+	if err != nil {
+		t.Fatalf("IssueCard() with matching currency error = %v", err)
+	}
+	if got, want := validCard.GetAirwallexCardId(), "aw_card_mock_000001"; got != want {
+		t.Errorf("AirwallexCardId = %q, want %q (a prior mismatched-currency call must not have created an Airwallex card)", got, want)
+	}
+}
+
 func TestAdjustCardLimit_IncreaseChecksHeadroom(t *testing.T) {
 	aw := airwallex.NewMock()
 	ledger := &fakeLedger{

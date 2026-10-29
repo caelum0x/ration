@@ -169,6 +169,33 @@ func (s *Service) IssueCard(ctx context.Context, req *cardissuancepb.IssueCardRe
 	if currency == "" {
 		currency = tenant.GetCurrency()
 	}
+	// This system has no FX conversion anywhere (ledger-core's own
+	// apply_entry/record_deposit hard-reject any amount whose currency
+	// doesn't exactly equal the tenant's own currency — see
+	// services/ledger-core/src/ledger.rs's CurrencyMismatch checks) —
+	// every card is really a hold against the tenant's single-currency
+	// balance, never a converted one. Before this check, a caller could
+	// pass --currency for a different ISO code than the tenant's own and
+	// IssueCard would happily create a real Airwallex card for it,
+	// because the request's limit_minor_units == 0 path never calls
+	// CheckReserveFloor/ApplyEntry at all, so the mismatch was never
+	// exercised at creation time. The card then sat there permanently
+	// stuck at a zero limit: the very next "card adjust-limit" above
+	// zero fails with a confusing low-level
+	// "currency mismatch: USD vs EUR" error surfaced from ledger-core's
+	// ApplyEntry, with no way to ever fund that card. Reproduced live:
+	// `ration card issue --currency EUR --limit 0` against a USD tenant
+	// succeeds silently; the following `card adjust-limit --limit
+	// 100000` on that same card then fails with exactly that error.
+	// Reject upfront instead, before any Airwallex card is created, so
+	// the caller gets an immediate, actionable error instead of a
+	// permanently unfundable card discovered only later.
+	if currency != tenant.GetCurrency() {
+		return nil, fmt.Errorf(
+			"cardsvc: card currency %s does not match tenant %s's currency %s (no FX conversion supported; omit --currency to use the tenant's own)",
+			currency, req.GetTenantId(), tenant.GetCurrency(),
+		)
+	}
 
 	awCard, err := s.airwallex.IssueCard(ctx, airwallex.IssueCardParams{
 		TenantID:        req.GetTenantId(),
