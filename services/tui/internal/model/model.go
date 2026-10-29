@@ -72,6 +72,11 @@ type Model struct {
 	err           error
 	connected     bool
 	lastRefresh   time.Time
+
+	// form is non-nil while the "issue card" / "adjust limit" modal
+	// (cardform.go) is open. Its presence, not activeTab, is what
+	// Update/View branch on — see handleKey and View.
+	form *cardForm
 }
 
 // New builds the initial model wired to the given (already dialed) gRPC
@@ -136,6 +141,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		}
 		return m, waitForActivity(m.events)
+
+	case formResultMsg:
+		if m.form == nil {
+			return m, nil
+		}
+		m.form.submitting = false
+		if msg.err != nil {
+			m.form.err = msg.err.Error()
+			return m, nil
+		}
+		m.form = nil
+		return m, fetchAll(m.ctx, m.clients)
 	}
 	return m, nil
 }
@@ -161,6 +178,10 @@ func (m *Model) applyRefresh(msg refreshMsg) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.form != nil {
+		return m.handleFormKey(msg)
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "q":
 		m.cancel()
@@ -200,7 +221,66 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		return m, fetchAll(m.ctx, m.clients)
+
+	case "n":
+		if m.activeTab == TabCards && len(m.tenants) > 0 {
+			m.form = newIssueCardForm(m.tenants, m.tenantIdxForSelectedCard())
+		}
+		return m, nil
+
+	case "a":
+		if m.activeTab == TabCards && m.cursor[TabCards] < len(m.cards) {
+			card := m.cards[m.cursor[TabCards]]
+			m.form = newAdjustLimitForm(card, resolveTenantName(m.tenantNames, card.GetTenantId()))
+		}
+		return m, nil
 	}
+	return m, nil
+}
+
+// tenantIdxForSelectedCard defaults the "issue card" form's tenant
+// picker to the tenant that owns the card currently under the Cards
+// tab's cursor, so issuing a second card for the tenant an operator is
+// already looking at doesn't require re-picking it. Falls back to
+// index 0 when there's no selected card (empty tab) or its tenant
+// isn't found (shouldn't happen against a consistent snapshot, but a
+// missing default is better than a panic).
+func (m Model) tenantIdxForSelectedCard() int {
+	if m.cursor[TabCards] >= len(m.cards) {
+		return 0
+	}
+	tenantID := m.cards[m.cursor[TabCards]].GetTenantId()
+	for i, t := range m.tenants {
+		if t.GetId() == tenantID {
+			return i
+		}
+	}
+	return 0
+}
+
+// handleFormKey routes a key press while the issue/adjust-limit modal
+// is open: esc cancels, enter validates then submits, everything else
+// is delegated to cardForm.handleKey's own field navigation/editing.
+func (m Model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.form = nil
+		return m, nil
+
+	case "enter":
+		if m.form.submitting {
+			return m, nil
+		}
+		if err := m.form.validate(); err != nil {
+			m.form.err = err.Error()
+			return m, nil
+		}
+		m.form.err = ""
+		m.form.submitting = true
+		return m, submitForm(m.ctx, m.clients, m.form)
+	}
+
+	m.form.handleKey(msg)
 	return m, nil
 }
 
@@ -241,6 +321,10 @@ func (m Model) View() string {
 		body = view.Activity(m.activity, m.cursor[TabActivity], m.activityFeedHeight())
 	}
 
+	if m.form != nil {
+		body = view.CardForm(m.renderFormFields(), m.form.infoLine, m.form.err, m.form.submitting)
+	}
+
 	return lipgloss.JoinVertical(lipgloss.Left,
 		tabBar,
 		"",
@@ -263,6 +347,11 @@ func (m Model) activityFeedHeight() int {
 }
 
 func (m Model) footerLine() string {
+	if m.form != nil {
+		hints := "tab/↑↓: next field  •  ←→: cycle option  •  enter: submit  •  esc: cancel"
+		return view.MutedStyle.Render(hints)
+	}
+
 	status := "● live"
 	if !m.connected {
 		status = "○ reconnecting…"
@@ -274,12 +363,31 @@ func (m Model) footerLine() string {
 	}
 
 	hints := "tab/shift+tab or 1-5: switch tab  •  ↑/↓: scroll  •  r: refresh now  •  q: quit"
+	if m.activeTab == TabCards {
+		hints = "n: issue card  •  a: adjust limit  •  " + hints
+	}
 	line := fmt.Sprintf("%s   last refresh: %s   %s", status, refreshed, hints)
 
 	if m.err != nil {
 		return view.ErrorStyle.Render(fmt.Sprintf("last error: %v", m.err)) + "\n" + view.MutedStyle.Render(line)
 	}
 	return view.MutedStyle.Render(line)
+}
+
+// renderFormFields converts the active cardForm's fields into the
+// view package's own (gRPC/tea-free) row type, so view.CardForm stays
+// a pure data-in/string-out renderer like every other view.* function.
+func (m Model) renderFormFields() []view.FormFieldRow {
+	rows := make([]view.FormFieldRow, len(m.form.fields))
+	for i, f := range m.form.fields {
+		rows[i] = view.FormFieldRow{
+			Label:   f.label,
+			Value:   f.text(),
+			Picker:  f.kind == fieldPicker,
+			Focused: i == m.form.focus,
+		}
+	}
+	return rows
 }
 
 // fetchAll polls ledger-core and the gateway for the current snapshot of

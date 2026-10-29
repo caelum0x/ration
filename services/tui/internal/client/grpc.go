@@ -194,6 +194,30 @@ func (c *Clients) ListAgentDecisions(ctx context.Context, tenantID string, limit
 	return resp.GetDecisions(), nil
 }
 
+// IssueCard issues a new card for a tenant via the gateway, the same
+// gateway.IssueCard RPC services/cli's "ration card issue" calls — the
+// TUI's Cards tab had no caller of this RPC at all before this (see
+// model.newIssueCardForm): it could only ever display cards the
+// agent's own RationBridgeFunding side effects created.
+func (c *Clients) IssueCard(ctx context.Context, req *gatewaypb.IssueCardRequest) (*gatewaypb.Card, error) {
+	card, err := c.Gateway.IssueCard(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("issue card for tenant %s: %w", req.GetTenantId(), err)
+	}
+	return card, nil
+}
+
+// AdjustCardLimit changes an existing card's spend limit via the
+// gateway, the same gateway.AdjustCardLimit RPC services/cli's
+// "ration card adjust-limit" calls.
+func (c *Clients) AdjustCardLimit(ctx context.Context, req *gatewaypb.AdjustCardLimitRequest) (*gatewaypb.Card, error) {
+	card, err := c.Gateway.AdjustCardLimit(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("adjust limit for card %s: %w", req.GetCardId(), err)
+	}
+	return card, nil
+}
+
 // StreamActivity opens the gateway's live activity feed for all tenants
 // (an empty tenant_id, per gateway.proto, means "all tenants"). The caller
 // owns the returned stream's lifecycle and should Recv() in a loop until
