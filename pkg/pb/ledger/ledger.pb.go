@@ -666,8 +666,23 @@ type ApplyEntryRequest struct {
 	Reference      string                 `protobuf:"bytes,4,opt,name=reference,proto3" json:"reference,omitempty"`
 	IdempotencyKey string                 `protobuf:"bytes,5,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	Memo           string                 `protobuf:"bytes,6,opt,name=memo,proto3" json:"memo,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// When non-empty, apply_entry atomically (inside the same lock/
+	// transaction that writes this entry) verifies this deposit_id has
+	// NOT already been marked received before applying a HOLD — see
+	// ApplyEntryResponse.deposit_already_received. Added for
+	// bridge-funding (services/card-issuance/internal/bridge.Service),
+	// whose HOLD backs a specific late deposit by convention
+	// ("bridge:<deposit_id>:..." reference) but, before this field
+	// existed, had no atomic way to refuse placing that HOLD if the
+	// deposit happened to be marked received by a concurrent
+	// webhook-ingestion delivery in the window between bridge's own
+	// check (findRelevantLateDeposit) and this call — see round 27's
+	// BUILD-LOG entry. Ignored for every other entry type/caller (empty
+	// string is the default and skips the check entirely, matching every
+	// existing ApplyEntry caller unchanged).
+	RequireDepositOutstandingId string `protobuf:"bytes,7,opt,name=require_deposit_outstanding_id,json=requireDepositOutstandingId,proto3" json:"require_deposit_outstanding_id,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *ApplyEntryRequest) Reset() {
@@ -742,13 +757,25 @@ func (x *ApplyEntryRequest) GetMemo() string {
 	return ""
 }
 
+func (x *ApplyEntryRequest) GetRequireDepositOutstandingId() string {
+	if x != nil {
+		return x.RequireDepositOutstandingId
+	}
+	return ""
+}
+
 type ApplyEntryResponse struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	Entry                *LedgerEntry           `protobuf:"bytes,1,opt,name=entry,proto3" json:"entry,omitempty"`
 	BalanceAfter         *Balance               `protobuf:"bytes,2,opt,name=balance_after,json=balanceAfter,proto3" json:"balance_after,omitempty"`
 	ReserveFloorViolated bool                   `protobuf:"varint,3,opt,name=reserve_floor_violated,json=reserveFloorViolated,proto3" json:"reserve_floor_violated,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// True when require_deposit_outstanding_id was set and that deposit
+	// had already been marked received by the time this call acquired
+	// ledger-core's lock — the entry was NOT applied, mirroring
+	// reserve_floor_violated's own "rejected, not an error" shape.
+	DepositAlreadyReceived bool `protobuf:"varint,4,opt,name=deposit_already_received,json=depositAlreadyReceived,proto3" json:"deposit_already_received,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *ApplyEntryResponse) Reset() {
@@ -798,6 +825,13 @@ func (x *ApplyEntryResponse) GetBalanceAfter() *Balance {
 func (x *ApplyEntryResponse) GetReserveFloorViolated() bool {
 	if x != nil {
 		return x.ReserveFloorViolated
+	}
+	return false
+}
+
+func (x *ApplyEntryResponse) GetDepositAlreadyReceived() bool {
+	if x != nil {
+		return x.DepositAlreadyReceived
 	}
 	return false
 }
@@ -1542,18 +1576,20 @@ const file_ledger_proto_rawDesc = "" +
 	"\n" +
 	"as_of_unix\x18\x01 \x01(\x03R\basOfUnix\"M\n" +
 	"\x14ListDepositsResponse\x125\n" +
-	"\bdeposits\x18\x01 \x03(\v2\x19.ration.ledger.v1.DepositR\bdeposits\"\xf3\x01\n" +
+	"\bdeposits\x18\x01 \x03(\v2\x19.ration.ledger.v1.DepositR\bdeposits\"\xb8\x02\n" +
 	"\x11ApplyEntryRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x125\n" +
 	"\x04type\x18\x02 \x01(\x0e2!.ration.common.v1.LedgerEntryTypeR\x04type\x12/\n" +
 	"\x06amount\x18\x03 \x01(\v2\x17.ration.common.v1.MoneyR\x06amount\x12\x1c\n" +
 	"\treference\x18\x04 \x01(\tR\treference\x12'\n" +
 	"\x0fidempotency_key\x18\x05 \x01(\tR\x0eidempotencyKey\x12\x12\n" +
-	"\x04memo\x18\x06 \x01(\tR\x04memo\"\xbf\x01\n" +
+	"\x04memo\x18\x06 \x01(\tR\x04memo\x12C\n" +
+	"\x1erequire_deposit_outstanding_id\x18\a \x01(\tR\x1brequireDepositOutstandingId\"\xf9\x01\n" +
 	"\x12ApplyEntryResponse\x123\n" +
 	"\x05entry\x18\x01 \x01(\v2\x1d.ration.ledger.v1.LedgerEntryR\x05entry\x12>\n" +
 	"\rbalance_after\x18\x02 \x01(\v2\x19.ration.ledger.v1.BalanceR\fbalanceAfter\x124\n" +
-	"\x16reserve_floor_violated\x18\x03 \x01(\bR\x14reserveFloorViolated\"\xb7\x02\n" +
+	"\x16reserve_floor_violated\x18\x03 \x01(\bR\x14reserveFloorViolated\x128\n" +
+	"\x18deposit_already_received\x18\x04 \x01(\bR\x16depositAlreadyReceived\"\xb7\x02\n" +
 	"\vLedgerEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x125\n" +

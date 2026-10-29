@@ -22,9 +22,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/caelum0x/ration/pkg/metrics"
 	commonpb "github.com/caelum0x/ration/pkg/pb/common"
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
-	"github.com/caelum0x/ration/pkg/metrics"
 	"github.com/caelum0x/ration/services/card-issuance/internal/idgen"
 )
 
@@ -300,6 +300,25 @@ func (s *Service) RationBridgeFunding(ctx context.Context, tenantID string, requ
 		Reference:      bridgeReference(lateDeposit.GetId(), idempotencyKey),
 		IdempotencyKey: idempotencyKey,
 		Memo:           fmt.Sprintf("bridge funding: %s", reason),
+		// Closes the cross-service TOCTOU race documented in
+		// RationBridgeFunding's own doc comment above lockTenant: this
+		// per-tenant lock only serializes OTHER RationBridgeFunding
+		// calls for the same tenant — it cannot see, and cannot
+		// serialize against, webhook-ingestion's own, separate
+		// per-tenant lock in a DIFFERENT process. Without this field,
+		// ledger-core would happily place this HOLD even if
+		// webhook-ingestion's handleTransactionCreated had already
+		// marked lateDeposit received (and, in the same atomic step,
+		// already run its one-time "release any outstanding bridge
+		// holds for this deposit" scan — which found nothing, since
+		// this HOLD didn't exist yet) sometime between this method's
+		// own findRelevantLateDeposit read, above, and this call. That
+		// HOLD would then be permanently unreleasable: no code path in
+		// this repo ever revisits a "bridge:" reference a second time.
+		// ledger-core's apply_entry_checked re-verifies this atomically,
+		// under the same lock that writes the HOLD, the same way it
+		// already re-verifies the reserve floor for defense in depth.
+		RequireDepositOutstandingId: lateDeposit.GetId(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bridge: apply hold entry for %s: %w", tenantID, err)
@@ -311,6 +330,23 @@ func (s *Service) RationBridgeFunding(ctx context.Context, tenantID string, requ
 		snap.GrantedMinorUnits = 0
 		snap.ReserveFloorBreached = true
 		explanation = "ledger-core rejected the hold as a reserve-floor violation despite gateway pre-checks; declining"
+		if err := s.recordDecision(ctx, tenantID, reason, commonpb.AgentAction_AGENT_ACTION_DECLINE, explanation, snap); err != nil {
+			return nil, err
+		}
+		s.recordGrant("declined")
+		return &Result{GrantedMinorUnits: 0, FullyGranted: false, Explanation: explanation}, nil
+	}
+	if entryResp.GetDepositAlreadyReceived() {
+		// See the RequireDepositOutstandingId comment above: the late
+		// deposit this grant was meant to stand in for was marked
+		// received by a concurrent webhook delivery while this call was
+		// still in flight — the tenant's money has already arrived via
+		// the normal path, so there is nothing left to bridge.
+		snap.GrantedMinorUnits = 0
+		explanation = fmt.Sprintf(
+			"declined: the late deposit this grant targeted (%s) was received while this request was in flight; nothing left to bridge",
+			lateDeposit.GetId(),
+		)
 		if err := s.recordDecision(ctx, tenantID, reason, commonpb.AgentAction_AGENT_ACTION_DECLINE, explanation, snap); err != nil {
 			return nil, err
 		}

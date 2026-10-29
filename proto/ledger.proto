@@ -104,12 +104,32 @@ message ApplyEntryRequest {
   string reference = 4;
   string idempotency_key = 5;
   string memo = 6;
+  // When non-empty, apply_entry atomically (inside the same lock/
+  // transaction that writes this entry) verifies this deposit_id has
+  // NOT already been marked received before applying a HOLD — see
+  // ApplyEntryResponse.deposit_already_received. Added for
+  // bridge-funding (services/card-issuance/internal/bridge.Service),
+  // whose HOLD backs a specific late deposit by convention
+  // ("bridge:<deposit_id>:..." reference) but, before this field
+  // existed, had no atomic way to refuse placing that HOLD if the
+  // deposit happened to be marked received by a concurrent
+  // webhook-ingestion delivery in the window between bridge's own
+  // check (findRelevantLateDeposit) and this call — see round 27's
+  // BUILD-LOG entry. Ignored for every other entry type/caller (empty
+  // string is the default and skips the check entirely, matching every
+  // existing ApplyEntry caller unchanged).
+  string require_deposit_outstanding_id = 7;
 }
 
 message ApplyEntryResponse {
   LedgerEntry entry = 1;
   Balance balance_after = 2;
   bool reserve_floor_violated = 3;
+  // True when require_deposit_outstanding_id was set and that deposit
+  // had already been marked received by the time this call acquired
+  // ledger-core's lock — the entry was NOT applied, mirroring
+  // reserve_floor_violated's own "rejected, not an error" shape.
+  bool deposit_already_received = 4;
 }
 
 message LedgerEntry {

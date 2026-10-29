@@ -281,16 +281,22 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
         let req = request.into_inner();
         let amount = money_from_pb(req.amount, "amount")?;
         let entry_type = LedgerEntryType::from_i32(req.r#type);
+        let require_deposit_outstanding_id = if req.require_deposit_outstanding_id.is_empty() {
+            None
+        } else {
+            Some(req.require_deposit_outstanding_id.clone())
+        };
         let ledger = self.ledger.clone();
         let outcome = tokio::task::spawn_blocking(move || {
             ledger
-                .apply_entry(
+                .apply_entry_checked(
                     req.tenant_id.clone(),
                     entry_type,
                     amount,
                     req.reference,
                     req.idempotency_key,
                     req.memo,
+                    require_deposit_outstanding_id,
                 )
                 .map(|outcome| (outcome, req.tenant_id))
         })
@@ -311,13 +317,30 @@ impl pb::ledger_core_server::LedgerCore for LedgerCoreService {
                     entry: Some(to_pb_entry(&entry)),
                     balance_after: Some(to_pb_balance(&tenant_id, &balance, &entry.currency)),
                     reserve_floor_violated: false,
+                    deposit_already_received: false,
                 }
             }
             ApplyOutcome::ReserveFloorViolated { balance, currency } => pb::ApplyEntryResponse {
                 entry: None,
                 balance_after: Some(to_pb_balance(&tenant_id, &balance, &currency)),
                 reserve_floor_violated: true,
+                deposit_already_received: false,
             },
+            ApplyOutcome::DepositAlreadyReceived { balance: _ } => {
+                // No currency context survives to here (the Hold was
+                // never applied, so there's no entry to source one
+                // from) — balance_after's own currency field is left
+                // unset (to_pb_balance requires one); callers (today,
+                // only bridge.Service) only ever read
+                // deposit_already_received itself, not balance_after,
+                // for this outcome.
+                pb::ApplyEntryResponse {
+                    entry: None,
+                    balance_after: None,
+                    reserve_floor_violated: false,
+                    deposit_already_received: true,
+                }
+            }
         };
         Ok(Response::new(response))
     }

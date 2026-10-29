@@ -561,6 +561,16 @@ impl Ledger {
     /// `ApplyOutcome::ReserveFloorViolated` (not an error) carrying the
     /// unchanged current balance, mirroring
     /// `ApplyEntryResponse.reserve_floor_violated` in the proto.
+    ///
+    /// Thin wrapper over [`Ledger::apply_entry_checked`] with no deposit
+    /// linkage check (`require_deposit_outstanding_id: None`) — every
+    /// pre-round-27 caller (every test in this crate, every other
+    /// mutation in this codebase) keeps calling this unchanged. Only
+    /// `crate::grpc`'s `apply_entry` RPC handler calls
+    /// `apply_entry_checked` directly, forwarding whatever
+    /// `ApplyEntryRequest.require_deposit_outstanding_id` the caller
+    /// supplied (empty string, the default, behaves identically to
+    /// `None` here).
     pub fn apply_entry(
         &self,
         tenant_id: String,
@@ -569,6 +579,23 @@ impl Ledger {
         reference: String,
         idempotency_key: String,
         memo: String,
+    ) -> Result<ApplyOutcome, LedgerError> {
+        self.apply_entry_checked(tenant_id, entry_type, amount, reference, idempotency_key, memo, None)
+    }
+
+    /// Same as [`Ledger::apply_entry`], with one additional atomic
+    /// precondition: see `require_deposit_outstanding_id`'s own doc
+    /// comment below for the race this closes and why it must be
+    /// checked inside this same lock, not by a separate prior call.
+    pub fn apply_entry_checked(
+        &self,
+        tenant_id: String,
+        entry_type: LedgerEntryType,
+        amount: Money,
+        reference: String,
+        idempotency_key: String,
+        memo: String,
+        require_deposit_outstanding_id: Option<String>,
     ) -> Result<ApplyOutcome, LedgerError> {
         if idempotency_key.trim().is_empty() {
             return Err(LedgerError::IdempotencyKeyRequired);
@@ -601,6 +628,43 @@ impl Ledger {
                     b: amount.currency().to_string(),
                 },
             ));
+        }
+
+        // Closes a real fund-stranding race between bridge-funding
+        // (services/card-issuance/internal/bridge.Service) and a
+        // concurrent webhook-ingestion delivery for the SAME deposit —
+        // see round 27's BUILD-LOG entry. bridge.Service reads a
+        // deposit as late (findRelevantLateDeposit), then — much later
+        // in the same call, after several more RPC round trips — calls
+        // ApplyEntry for a HOLD whose reference ties it to that
+        // deposit_id ("bridge:<deposit_id>:..."), on the assumption
+        // that this deposit is still outstanding. Without this check,
+        // if webhook-ingestion's own handleTransactionCreated (running
+        // in a SEPARATE process, serialized only by ITS OWN per-tenant
+        // lock — a lock bridge.Service's per-tenant lock cannot see,
+        // since they are different Go processes with independent
+        // memory) marks that exact deposit received in the window
+        // between bridge's read and this call, mark_deposit_received_
+        // with_entry's own hold-release logic has ALREADY run (and
+        // found nothing to release, since this HOLD didn't exist yet)
+        // by the time this HOLD lands — so the HOLD becomes permanently
+        // unreleasable: no other code path in this repo ever revisits
+        // a "bridge:" reference, and a second MarkDepositReceived call
+        // for the same deposit_id is a pure idempotent no-op (see
+        // mark_deposit_received_with_entry's own early-return). This
+        // check runs under the SAME lock as every other apply_entry
+        // invariant (currency, reserve floor) — the only place in this
+        // codebase that can see both "is this deposit still
+        // outstanding" and "about to place this HOLD" atomically,
+        // since both facts live in the same SQLite index guarded by
+        // this one Mutex.
+        if let Some(deposit_id) = require_deposit_outstanding_id.as_ref() {
+            if let Some(dep) = deposit::get(&inner.db, deposit_id, crypto.as_ref())? {
+                if dep.status == deposit::DepositStatus::Received {
+                    let balance = read_balance(&inner.db, &tenant_id)?;
+                    return Ok(ApplyOutcome::DepositAlreadyReceived { balance });
+                }
+            }
         }
 
         let current = read_balance(&inner.db, &tenant_id)?;
@@ -775,6 +839,9 @@ pub enum ApplyOutcome {
     ReserveFloorViolated {
         balance: BalanceRecord,
         currency: String,
+    },
+    DepositAlreadyReceived {
+        balance: BalanceRecord,
     },
 }
 
