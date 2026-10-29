@@ -97,6 +97,59 @@ func TestHandleAirwallexWebhook_ValidTransactionCreated(t *testing.T) {
 	}
 }
 
+// TestHandleAirwallexWebhook_ReferenceMatchRequiresAmountMatch
+// reproduces a real over-crediting gap: before matchDepositByReference
+// required amount equality, a transaction carrying a deposit's
+// reference was credited for that deposit's FULL expected amount
+// regardless of how much the transaction actually moved. Here a
+// $5,000.00 deposit's reference arrives on a real $1.00 transaction —
+// the deposit must NOT be marked received off of it (no other deposit
+// matches $1.00 either, so this transaction has no safe match at all).
+func TestHandleAirwallexWebhook_ReferenceMatchRequiresAmountMatch(t *testing.T) {
+	secret := "whsec_test"
+	ledger := &fakeLedger{
+		deposits: []*ledgerpb.Deposit{
+			{
+				Id:             "dep_1",
+				TenantId:       "tenant_1",
+				ExternalRef:    "REF-100",
+				ExpectedAmount: &commonpb.Money{MinorUnits: 500000, Currency: "USD"},
+				ExpectedAtUnix: 1000,
+			},
+		},
+	}
+	h := NewHandler(secret, ledger, nil, nil)
+
+	payload, _ := json.Marshal(map[string]any{
+		"id":   "evt_1",
+		"name": "global_account.transaction.created",
+		"data": map[string]any{
+			"tenant_id":          "tenant_1",
+			"transaction_id":     "tx_1",
+			"amount_minor_units": 100, // $1.00 — not dep_1's $5,000.00
+			"currency":           "USD",
+			"reference":          "REF-100", // but reuses dep_1's reference
+			"occurred_at_unix":   1500,
+		},
+	})
+	timestamp := freshTimestamp()
+	sig := sign(secret, payload, timestamp)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/airwallex", bytes.NewReader(payload))
+	req.Header.Set("x-timestamp", timestamp)
+	req.Header.Set("x-signature", sig)
+	rec := httptest.NewRecorder()
+
+	h.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (an unmatched transaction is not a hard error)", rec.Code)
+	}
+	if len(ledger.marked) != 0 {
+		t.Fatalf("marked = %+v, want none — a $1.00 transaction must never credit a $5,000.00 deposit just because the reference string matched", ledger.marked)
+	}
+}
+
 func TestHandleAirwallexWebhook_InvalidSignature(t *testing.T) {
 	ledger := &fakeLedger{}
 	h := NewHandler("whsec_test", ledger, nil, nil)

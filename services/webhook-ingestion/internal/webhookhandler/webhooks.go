@@ -104,14 +104,21 @@ func (h *Handler) handleAirwallexWebhook(w http.ResponseWriter, r *http.Request)
 //
 //  1. Exact correlation-key match: if payload.Reference is non-empty,
 //     prefer the (sole) not-yet-received deposit for this tenant whose
-//     own ExternalRef equals it exactly — set back when that deposit was
-//     first recorded (gateway's SimulateDeposit, or any RecordDeposit
-//     caller that assigns a reference it told the tenant to use on
-//     their wire transfer). This is a correct identification, not a
-//     heuristic: no two concurrently-outstanding deposits are ever given
-//     the same reference, so an exact match cannot misattribute funds
-//     regardless of how many deposits of the same amount a tenant has
-//     outstanding at once.
+//     own ExternalRef equals it exactly AND whose expected amount
+//     equals the transaction's own amount — set back when that deposit
+//     was first recorded (gateway's SimulateDeposit, or any
+//     RecordDeposit caller that assigns a reference it told the tenant
+//     to use on their wire transfer). The amount half of this check is
+//     required, not optional: MarkDepositReceived always credits the
+//     matched deposit's full pre-recorded expected amount (it has no
+//     "amount actually transferred" field to credit instead), so a
+//     reference match on its own would let any real transaction amount
+//     — including a short transfer — still mark the full expected
+//     amount received. With both halves required, this is a correct
+//     identification, not a heuristic: no two concurrently-outstanding
+//     deposits are ever given the same reference, so a match cannot
+//     misattribute funds regardless of how many deposits of the same
+//     amount a tenant has outstanding at once.
 //  2. Amount heuristic fallback: (tenant, amount, not-yet-received,
 //     oldest) — used only when no reference is present on the
 //     transaction, or no deposit's ExternalRef matches it (e.g. an
@@ -151,7 +158,7 @@ func (h *Handler) handleTransactionCreated(ctx context.Context, env *airwallex.W
 		return fmt.Errorf("list deposits for %s: %w", payload.TenantID, err)
 	}
 
-	match := matchDepositByReference(deposits, payload.Reference)
+	match := matchDepositByReference(deposits, payload.Reference, payload.AmountMinorUnits)
 	matchedBy := "reference"
 	if match == nil {
 		match = matchDepositByAmountHeuristic(deposits, payload.AmountMinorUnits)
