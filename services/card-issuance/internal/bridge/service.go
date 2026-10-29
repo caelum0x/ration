@@ -123,6 +123,27 @@ type Result struct {
 // rule inputs produced the envelope, per docs/AGENT-DESIGN.md's audit
 // trail requirement.
 type policySnapshot struct {
+	// DepositID is the late deposit this grant stands in for (empty when
+	// there was none to find). Required — not cosmetic — for
+	// services/agent/internal/loop/runner.go's hasOpenGrantWithinWindow:
+	// that function reads every recent RATION_BRIDGE-tagged
+	// agent_decision's own policy_snapshot_json back out of ledger-core
+	// to learn which deposit a prior grant was against, so it can check
+	// whether that exact deposit has since been received (rule 3's
+	// "unless the prior grant was fully repaid" exception). Without this
+	// field, a decision recorded from THIS service (every real grant
+	// executed through RationBridgeFunding records one here, independent
+	// of and in addition to the agent's own tools.go record of the same
+	// event) could never be resolved to a deposit_id — runner.go's
+	// depositIDFromSnapshot intentionally fails closed ("can't tell which
+	// deposit, assume blocked") on that ambiguity, which meant ONE
+	// successful grant, ever, permanently velocity-capped the tenant for
+	// the rest of the decision-history lookback window even after the
+	// backing deposit was fully repaid and its hold released. Found by
+	// re-auditing the two independent RecordAgentDecision call sites
+	// (this file's recordDecision and agent's tools.go) against
+	// runner.go's own repayment-resolution logic, then confirmed live.
+	DepositID                     string  `json:"deposit_id"`
 	AvailableMinorUnits           int64   `json:"available_minor_units"`
 	ReserveFloorMinorUnits        int64   `json:"reserve_floor_minor_units"`
 	HeadroomMinorUnits            int64   `json:"headroom_minor_units"`
@@ -186,6 +207,7 @@ func (s *Service) RationBridgeFunding(ctx context.Context, tenantID string, requ
 	}
 	var bridgeCap int64
 	if lateDeposit != nil {
+		snap.DepositID = lateDeposit.GetId()
 		snap.ExpectedLateDepositMinorUnits = lateDeposit.GetExpectedAmount().GetMinorUnits()
 		bridgeCap = int64(float64(snap.ExpectedLateDepositMinorUnits) * s.policy.MaxFraction)
 	}
