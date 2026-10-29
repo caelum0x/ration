@@ -14,8 +14,11 @@ make build
 ```
 
 Builds the C WAL (`services/wal/libwal.a`), the Rust ledger-core release
-binary, and the four Go binaries (`gateway`, `agent`, `tui`, `ration`) into
-`./bin` and `services/ledger-core/target/release`.
+binary, and 10 Go binaries into `./bin` (`gateway`, `auth`,
+`tenant-registry`, `card-issuance`, `webhook-ingestion`, `agent`, `tui`,
+`ration`, `audit-log`, `verify-chain`) — the full post-split service set
+(`docs/SCALE-EXPANSION.md` section 1), not just the original 4 from the
+first scaffold build.
 
 ## 1. Start the stack and seed demo tenants
 
@@ -23,7 +26,10 @@ binary, and the four Go binaries (`gateway`, `agent`, `tui`, `ration`) into
 scripts/run-demo.sh
 ```
 
-This starts, as background processes:
+This starts, as background processes, all **8 services** (confirmed
+against the script's own startup banner and `docker-compose.yml`'s
+service list — this doc previously undercounted it at 4, the same
+staleness class `README.md` had before a 2026-10-29 pass fixed it there):
 - **audit-log** (Go) — the append-only, hash-chained audit trail service
   (`AUDIT_LOG_GRPC_ADDR`, default `localhost:7003`), started first so
   ledger-core has a live mirror target from the moment it starts.
@@ -31,10 +37,31 @@ This starts, as background processes:
   `LEDGER_CORE_ADDR` (default `localhost:7001`). With `AUDIT_LOG_ADDR` set
   (which `scripts/run-demo.sh` always does), every `ApplyEntry` and
   `RecordAgentDecision` call is mirrored into audit-log's hash chain.
-- **gateway** (Go, `AIRWALLEX_MODE=mock`) — fronts the mock Airwallex
-  client, on `GATEWAY_GRPC_ADDR` (default `localhost:7002`).
+- **auth** (Go) — tenant API-key issuance/verification and operator JWT
+  minting, on `AUTH_GRPC_ADDR` (default `localhost:7010`). Every other
+  service below mints a short-lived operator credential from this one at
+  startup.
+- **tenant-registry** (Go) — tenant onboarding (`CreateTenant`/`ListTenants`),
+  on `TENANT_REGISTRY_GRPC_ADDR` (default `localhost:7011`) — what
+  `ration tenant create`/`tenant list` (step 8 below) actually talks to.
+- **card-issuance** (Go, `AIRWALLEX_MODE=mock`) — card issuance, limit
+  adjustment, and the bridge-funding rationing math itself, on
+  `CARD_ISSUANCE_GRPC_ADDR` (default `localhost:7012`).
+- **webhook-ingestion** (Go) — the HMAC-verified `POST /webhooks/airwallex`
+  listener, on `WEBHOOK_INGESTION_GRPC_ADDR`/HTTP `:8081`.
+- **gateway** (Go) — the external BFF: gRPC + REST/JSON `/v1/*` + the
+  judge-facing HTML dashboard, dialing `auth`/`ledger-core`/
+  `card-issuance`/`webhook-ingestion` directly (not `tenant-registry` —
+  that one's only reached via its own dedicated port, step 8 below), on
+  `GATEWAY_GRPC_ADDR` (default `localhost:7002`).
 - **agent** — the polling loop that watches for late deposits and runs the
   rationing decision pipeline (default poll interval: 10s).
+
+If this box is under load from other concurrent processes, any one of the
+services above can fail to start with a `DeadlineExceeded` minting its
+startup operator JWT against `auth`. If that happens, use
+`scripts/start-individually.sh` instead — identical result, longer delays
+between each service's startup.
 
 It waits for ledger-core and gateway to actually be accepting TCP
 connections on their gRPC ports before moving on (not a fixed sleep), then
@@ -166,7 +193,28 @@ was tampered with or corrupted after the fact — this is what makes "the
 audit trail is the point" (README, `docs/SUBMISSION.md`) a checkable claim
 instead of an assertion.
 
-## 8. Shut everything down
+## 8. Operator surface: onboard a tenant, issue a card, mint a credential
+
+The steps above exercise the agent's own decision loop. Separately, `ration`
+has 3 operator-facing command groups added across later rounds of this
+build (`tenant`, `card`, `apikey`) that a judge can drive directly — none
+of these mutate anything the agent's own demo flow above depends on, so
+they're safe to run before or after it:
+
+```bash
+./bin/ration tenant create --name "Acme Platform Payouts" --currency USD --reserve-floor-minor-units 500000
+./bin/ration tenant list
+./bin/ration card issue --tenant <tenant-id> --cardholder "Jane Operator" --limit 100000
+./bin/ration status --tenant <tenant-id>          # the new card shows up, Held balance reflects its limit
+./bin/ration apikey issue --tenant <tenant-id>     # mints a real credential for sdk/go/ration or sdk/rust/ration-client
+```
+
+`ration tenant create`/`card issue` both go through real gRPC round trips
+(`tenant-registry`/`card-issuance` respectively, fronted by `gateway` for
+the card path) — the new tenant and card are both independently visible
+via `ration status`, not a local echo.
+
+## 9. Shut everything down
 
 ```bash
 scripts/stop-demo.sh
