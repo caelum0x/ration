@@ -11,11 +11,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -130,6 +132,19 @@ func run(log *slog.Logger) error {
 
 	cardSvc := cardsvc.New(awClient, ledger)
 	cardSvc.Metrics = met
+
+	// Load any cards persisted by a prior run of this process and
+	// persist every future mutation back to the same file — see
+	// cardsvc.Service.EnablePersistence's doc comment for why this
+	// matters: without it, a restart silently loses every issued
+	// card's metadata while the ledger HOLD backing its limit lives on
+	// in ledger-core forever, unreachable by any CloseCard/
+	// AdjustCardLimit call ever again.
+	cardsDataPath := filepath.Join(cfg.DataDir, "cards.json")
+	if err := cardSvc.EnablePersistence(cardsDataPath); err != nil {
+		return fmt.Errorf("card-issuance: load card store from %s: %w", cardsDataPath, err)
+	}
+	log.Info("card store persistence enabled", "path", cardsDataPath)
 
 	bridgePolicy := bridge.Policy{
 		MaxFraction:        cfg.BridgeMaxFraction,

@@ -11,10 +11,21 @@ option go_package = "github.com/caelum0x/ration/pkg/pb/cardissuance";
 // internal/card (Airwallex issuing-card management) and internal/bridge
 // (the rationing/bridge-funding math) — the highest-value service in the
 // system per docs/adr/0004, since this is where real money decisions
-// happen. Stateless and idempotent per tenant: correctness under
-// concurrent calls for one tenant rests on ledger-core's idempotent,
-// reserve-floor-checked ApplyEntry, not on any lock here, so this
-// service is safe to run as N replicas.
+// happen. Money-moving correctness under concurrent calls for one
+// tenant rests on ledger-core's idempotent, reserve-floor-checked
+// ApplyEntry, not on any lock here. That is NOT the same as "safe to
+// run as N replicas" — this service's own internal/cardsvc owns the
+// only copy of each Card's metadata (id, cardholder, limit, status;
+// ledger-core's proto has no Card message), persisted to a single
+// local file per process (cardsvc.Service.EnablePersistence). Two
+// replicas behind a load balancer would each load/save their own
+// independent copy of that file and can genuinely diverge — a card
+// IssueCard creates on replica A is invisible to GetCard/ListCards on
+// replica B. Multi-replica safety for this service needs a real shared
+// store, not a local file; see docs/THREAT-MODEL.md for the write-up
+// of what IS fixed (durability across a single process's own restart)
+// versus what still requires that bigger, intentionally out-of-scope
+// change.
 //
 // gateway.proto (the one public surface the TUI/CLI/agent dial) is
 // unchanged by this split — services/gateway is the thin BFF that calls

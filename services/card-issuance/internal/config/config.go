@@ -35,6 +35,16 @@ type Config struct {
 	AirwallexAPIKey   string
 	AirwallexBaseURL  string
 
+	// DataDir is where this process persists its own card metadata
+	// (services/card-issuance/internal/cardsvc's file-backed store —
+	// see Service.EnablePersistence's doc comment for why this exists:
+	// without it, a restart loses every issued card while the ledger
+	// HOLD backing it lives on forever, unreachable). Same
+	// "RATION_<SERVICE>_DATA_DIR, default ./data" convention
+	// services/audit-log's RATION_AUDIT_LOG_DATA_DIR already
+	// established.
+	DataDir string
+
 	LedgerCoreAddr string
 	// AuthAddr is where card-issuance mints its own operator-scoped
 	// credential at startup (see internal/authclient.MintOperatorJWT)
@@ -63,6 +73,8 @@ func Load() (*Config, error) {
 		AirwallexClientID: os.Getenv("AIRWALLEX_CLIENT_ID"),
 		AirwallexAPIKey:   os.Getenv("AIRWALLEX_API_KEY"),
 		AirwallexBaseURL:  getenvDefault("AIRWALLEX_BASE_URL", "https://api-demo.airwallex.com"),
+
+		DataDir: getenvDefault("RATION_CARD_ISSUANCE_DATA_DIR", "./data"),
 
 		LedgerCoreAddr: getenvDefault("LEDGER_CORE_ADDR", "localhost:7001"),
 		AuthAddr:       getenvDefault("AUTH_GRPC_ADDR", "localhost:7010"),

@@ -16,6 +16,7 @@ package cardsvc
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -47,6 +48,14 @@ type Service struct {
 	mu    sync.RWMutex
 	cards map[string]*cardissuancepb.Card
 
+	// persistPath is the on-disk file EnablePersistence was given, or
+	// "" (the default: in-memory only, exactly this package's original
+	// behavior) if it was never called — every existing caller
+	// (main.go, this package's own and internal/grpcserver's tests)
+	// keeps working unchanged. See EnablePersistence's doc comment for
+	// why a process without it loses every card on restart.
+	persistPath string
+
 	now   func() time.Time
 	newID func(prefix string) string
 
@@ -56,7 +65,9 @@ type Service struct {
 	Metrics *metrics.Metrics
 }
 
-// New constructs a card Service.
+// New constructs a card Service. Card metadata lives only in memory
+// until EnablePersistence is called — see its doc comment for why that
+// matters.
 func New(aw airwallex.Client, ledger LedgerClient) *Service {
 	return &Service{
 		airwallex: aw,
@@ -65,6 +76,71 @@ func New(aw airwallex.Client, ledger LedgerClient) *Service {
 		now:       time.Now,
 		newID:     idgen.New,
 	}
+}
+
+// EnablePersistence makes this Service durable across process restarts:
+// it loads any previously-saved card metadata from path (a single JSON
+// file card-issuance owns outright — there is no WAL or SQLite here,
+// unlike ledger-core) into the in-memory map, then persists that map
+// back to the same file after every successful IssueCard, AdjustCardLimit,
+// and CloseCard.
+//
+// Without this, this package's own top-of-file doc comment ("the only
+// place that persists card metadata") and card_issuance.proto's service
+// comment ("stateless... safe to run as N replicas") describe a
+// guarantee this type never actually provided: cards lived only in an
+// unexported Go map, so a card-issuance restart silently lost every
+// issued card's id/cardholder/limit/status while the ledger HOLD
+// backing its limit stays on ledger-core's books forever — unreachable
+// by GetCard/AdjustCardLimit/CloseCard ever again, since all three look
+// the card up by id first. This closes that gap for the single-process
+// restart case (the one this repo has actually hit, repeatedly, from
+// crash loops and resource-contention-induced restarts — see
+// BUILD-LOG-2026-10-23.md's rounds 3 and 7). It does NOT make running N
+// replicas of this service actually safe: each replica would still load
+// and save its own independent copy of path, so two replicas behind a
+// load balancer can still diverge (one issues a card the other's
+// GetCard/ListCards can't see) unless path is a shared, lock-coordinated
+// filesystem — that needs a real shared store (the same class of gap
+// already named and intentionally left open for services/auth's
+// internal/apikey.Store), not a local JSON file, and is out of scope
+// here.
+func (s *Service) EnablePersistence(path string) error {
+	loaded, err := loadCardsFile(path)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	for id, card := range loaded {
+		s.cards[id] = card
+	}
+	s.mu.Unlock()
+
+	s.persistPath = path
+	return nil
+}
+
+// persist writes the current card map to disk if EnablePersistence was
+// called, or is a no-op (returns nil, touches no filesystem) otherwise
+// — so the package's own tests and internal/grpcserver's tests, neither
+// of which call EnablePersistence, are unaffected by this change.
+func (s *Service) persist() error {
+	if s.persistPath == "" {
+		return nil
+	}
+
+	s.mu.RLock()
+	snapshot := make(map[string]*cardissuancepb.Card, len(s.cards))
+	for id, card := range s.cards {
+		snapshot[id] = card
+	}
+	s.mu.RUnlock()
+
+	if err := saveCardsFile(s.persistPath, snapshot); err != nil {
+		return fmt.Errorf("cardsvc: persist card store: %w", err)
+	}
+	return nil
 }
 
 // IssueCard creates a card via Airwallex, verifies the tenant has enough
@@ -153,6 +229,20 @@ func (s *Service) IssueCard(ctx context.Context, req *cardissuancepb.IssueCardRe
 	s.cards[card.Id] = card
 	s.mu.Unlock()
 
+	// Best-effort, same discipline as ledger-core's own AuditMirror
+	// (docs/THREAT-MODEL.md item 3): the Airwallex card and ledger HOLD
+	// above are both real and already committed, with no safe way to
+	// undo either from here, so a persist failure must not fail this
+	// RPC — a client that saw an error here and retried IssueCard would
+	// double-issue a card and double the ledger hold against the same
+	// tenant, which is strictly worse than the original gap. Logged
+	// loudly instead of swallowed; the next successful persist (the
+	// very next card-issuance mutation) will still pick this card up.
+	if err := s.persist(); err != nil {
+		slog.Default().Error("cardsvc: failed to persist card store after IssueCard",
+			"error", err, "card_id", card.Id, "tenant_id", card.TenantId)
+	}
+
 	return cloneCard(card), nil
 }
 
@@ -235,6 +325,11 @@ func (s *Service) AdjustCardLimit(ctx context.Context, req *cardissuancepb.Adjus
 	updated := cloneCard(card)
 	s.mu.Unlock()
 
+	if err := s.persist(); err != nil {
+		slog.Default().Error("cardsvc: failed to persist card store after AdjustCardLimit",
+			"error", err, "card_id", updated.Id, "tenant_id", updated.TenantId)
+	}
+
 	return updated, nil
 }
 
@@ -278,6 +373,11 @@ func (s *Service) CloseCard(ctx context.Context, cardID string) (*cardissuancepb
 	card.LimitMinorUnits = 0
 	updated := cloneCard(card)
 	s.mu.Unlock()
+
+	if err := s.persist(); err != nil {
+		slog.Default().Error("cardsvc: failed to persist card store after CloseCard",
+			"error", err, "card_id", updated.Id, "tenant_id", updated.TenantId)
+	}
 
 	return updated, nil
 }
