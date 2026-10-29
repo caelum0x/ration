@@ -74,7 +74,19 @@ func Dial(ctx context.Context, gatewayAddr, ledgerAddr, authAddr string) (*Clien
 		return nil, fmt.Errorf("load mTLS config: %w", err)
 	}
 
-	auth, err := authclient.Dial(authAddr)
+	// This dial must present the TUI's own TUI_MTLS_* identity to auth
+	// too, same as the gateway/ledger-core dials below — auth's server
+	// requires and verifies a client cert the moment AUTH_MTLS_ENABLED
+	// is true, and a plaintext dial against that listener fails the
+	// TLS handshake outright, not a graceful degrade (confirmed live
+	// against a real mTLS-enabled auth instance). Mirrors gateway's
+	// own authMTLS/authDialCreds pattern
+	// (services/gateway/cmd/gateway/main.go).
+	authDialOpt, err := mtlsCfg.WithDefaultServerName("auth").DialOption()
+	if err != nil {
+		return nil, fmt.Errorf("mTLS dial option for auth: %w", err)
+	}
+	auth, err := authclient.Dial(authAddr, authDialOpt)
 	if err != nil {
 		return nil, fmt.Errorf("dial auth at %s: %w", authAddr, err)
 	}

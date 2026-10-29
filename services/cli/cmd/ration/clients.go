@@ -31,6 +31,34 @@ type clients struct {
 	Audit   auditpb.AuditLogClient
 }
 
+// dialAuthClient dials auth at authAddr, presenting the CLI's own
+// CLI_MTLS_* identity (loaded fresh from the environment here, same as
+// dialClients below) when CLI_MTLS_ENABLED is true. This is the one
+// place every CLI subcommand that talks to auth directly — dialClients
+// itself, and apikey.go/tenant.go's own standalone auth dials, which
+// used to each call authclient.Dial(flags.authAddr) plain, bypassing
+// mTLS entirely even when every other dial in the same binary used it —
+// should go through, so a 6th unauthenticated-to-auth call site can't
+// quietly reappear the same way the first one did. Without this, a
+// plaintext dial against a real AUTH_MTLS_ENABLED=true auth instance
+// doesn't degrade gracefully, it fails the TLS handshake outright
+// ("error reading server preface"), confirmed live.
+func dialAuthClient(authAddr string) (*authclient.Client, error) {
+	mtlsCfg, err := mtls.LoadFromEnv("CLI")
+	if err != nil {
+		return nil, fmt.Errorf("load mTLS config: %w", err)
+	}
+	authDialOpt, err := mtlsCfg.WithDefaultServerName("auth").DialOption()
+	if err != nil {
+		return nil, fmt.Errorf("mTLS dial option for auth: %w", err)
+	}
+	auth, err := authclient.Dial(authAddr, authDialOpt)
+	if err != nil {
+		return nil, fmt.Errorf("dial auth at %s: %w", authAddr, err)
+	}
+	return auth, nil
+}
+
 // dialClients opens both gRPC connections. Callers must call close() when
 // done, typically via defer.
 //
@@ -67,9 +95,9 @@ func dialClients(ctx context.Context, ledgerAddr, gatewayAddr, authAddr, auditAd
 		return nil, fmt.Errorf("load mTLS config: %w", err)
 	}
 
-	auth, err := authclient.Dial(authAddr)
+	auth, err := dialAuthClient(authAddr)
 	if err != nil {
-		return nil, fmt.Errorf("dial auth at %s: %w", authAddr, err)
+		return nil, err
 	}
 	defer auth.Close()
 	token, _, err := auth.MintOperatorJWT(ctx, "ration-cli", operatorCredentialTTL)

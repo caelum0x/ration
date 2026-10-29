@@ -124,7 +124,20 @@ func run(logger *slog.Logger) error {
 	// ...) would start failing the moment
 	// RATION_LEDGER_REQUIRE_TENANT_AUTH is enforced — breaking the
 	// agent's entire decision loop, not just hardening it.
-	authClient, err := authclient.Dial(authAddr)
+	//
+	// This dial must present the agent's own AGENT_MTLS_* identity to
+	// auth too, same as the ledger-core/gateway dials below — auth's
+	// server requires and verifies a client cert the moment
+	// AUTH_MTLS_ENABLED is true, and a plaintext dial against that
+	// listener fails the TLS handshake outright, not a graceful
+	// degrade (confirmed live against a real mTLS-enabled auth
+	// instance). Mirrors gateway's own authMTLS/authDialCreds pattern
+	// (services/gateway/cmd/gateway/main.go).
+	authDialOpt, err := mtlsCfg.WithDefaultServerName("auth").DialOption()
+	if err != nil {
+		return err
+	}
+	authClient, err := authclient.Dial(authAddr, authDialOpt)
 	if err != nil {
 		return err
 	}

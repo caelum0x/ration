@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/caelum0x/ration/services/cli/internal/authclient"
 	"github.com/spf13/cobra"
 )
 
@@ -54,7 +53,7 @@ gRPC/REST call, to satisfy gateway's internal/tenantauth interceptor
 				return fmt.Errorf("apikey issue: --tenant must be empty when --operator is set")
 			}
 
-			auth, err := authclient.Dial(flags.authAddr)
+			auth, err := dialAuthClient(flags.authAddr)
 			if err != nil {
 				return err
 			}
@@ -114,7 +113,7 @@ one-off operator key (ration apikey issue --operator) is no longer needed.`,
 				return fmt.Errorf("apikey revoke: --key-id is required")
 			}
 
-			auth, err := authclient.Dial(flags.authAddr)
+			auth, err := dialAuthClient(flags.authAddr)
 			if err != nil {
 				return err
 			}
@@ -162,7 +161,7 @@ plaintext secret is never shown here (or anywhere, after "apikey
 issue"'s own one-time output) — use the printed key_id with "apikey
 revoke" to turn one off.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			auth, err := authclient.Dial(flags.authAddr)
+			auth, err := dialAuthClient(flags.authAddr)
 			if err != nil {
 				return err
 			}

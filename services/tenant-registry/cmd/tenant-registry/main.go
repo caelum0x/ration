@@ -85,7 +85,21 @@ func run(log *slog.Logger) error {
 	// verifies its OWN inbound callers against auth too, not just its
 	// outgoing ledger-core calls. See operatorauth's doc comment for
 	// the real gap this closes.
-	authClient, err := authclient.Dial(cfg.AuthAddr)
+	//
+	// This dial must present tenant-registry's own
+	// TENANT_REGISTRY_MTLS_* identity to auth, same as the ledger-core
+	// dial below — auth's server requires and verifies a client cert
+	// the moment AUTH_MTLS_ENABLED is true, and a plaintext dial
+	// against that listener fails the TLS handshake outright, not a
+	// graceful degrade. Mirrors gateway's own authMTLS/authDialCreds
+	// pattern (services/gateway/cmd/gateway/main.go).
+	authMTLS := cfg.MTLS
+	authMTLS.ServerName = "auth"
+	authDialCreds, err := authMTLS.DialOption()
+	if err != nil {
+		return err
+	}
+	authClient, err := authclient.Dial(cfg.AuthAddr, authDialCreds)
 	if err != nil {
 		return err
 	}

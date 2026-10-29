@@ -86,7 +86,25 @@ func run(log *slog.Logger) error {
 	// this: without it, every ApplyEntry call (bridge-funding
 	// HOLD/RELEASE, card-limit DEBIT/RELEASE) starts failing the
 	// moment RATION_LEDGER_REQUIRE_TENANT_AUTH is enforced.
-	authClient, err := authclient.Dial(cfg.AuthAddr)
+	//
+	// This dial itself must present card-issuance's own
+	// CARD_ISSUANCE_MTLS_* identity to auth, same as every other peer
+	// dial below — auth's own server (services/auth/cmd/auth/main.go)
+	// requires and verifies a client cert the moment AUTH_MTLS_ENABLED
+	// is true (tls.RequireAndVerifyClientCert), and a plaintext dial
+	// against that listener doesn't degrade gracefully, it fails the
+	// TLS handshake outright ("error reading server preface"),
+	// confirmed live against a real mTLS-enabled auth instance. Mirrors
+	// gateway's own authMTLS/authDialCreds pattern
+	// (services/gateway/cmd/gateway/main.go), the only caller that
+	// already got this right.
+	authMTLS := cfg.MTLS
+	authMTLS.ServerName = "auth"
+	authDialCreds, err := authMTLS.DialOption()
+	if err != nil {
+		return err
+	}
+	authClient, err := authclient.Dial(cfg.AuthAddr, authDialCreds)
 	if err != nil {
 		return err
 	}

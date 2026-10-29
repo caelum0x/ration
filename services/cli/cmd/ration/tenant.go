@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/caelum0x/ration/pkg/mtls"
 	"github.com/caelum0x/ration/services/cli/internal/authclient"
 	"github.com/caelum0x/ration/services/cli/internal/moneyfmt"
 	"github.com/caelum0x/ration/services/cli/internal/tenantregistryclient"
@@ -37,9 +38,9 @@ import (
 // for ledger-core/gateway; kept separate here because tenant.go only
 // ever needs the one connection, not dialClients' full bundle.
 func dialTenantRegistry(ctx context.Context, tenantRegistryAddr, authAddr string) (*tenantregistryclient.Client, error) {
-	auth, err := authclient.Dial(authAddr)
+	auth, err := dialAuthClient(authAddr)
 	if err != nil {
-		return nil, fmt.Errorf("dial auth at %s: %w", authAddr, err)
+		return nil, err
 	}
 	defer auth.Close()
 	token, _, err := auth.MintOperatorJWT(ctx, "ration-cli", operatorCredentialTTL)
@@ -47,7 +48,26 @@ func dialTenantRegistry(ctx context.Context, tenantRegistryAddr, authAddr string
 		return nil, fmt.Errorf("mint operator credential from auth at %s: %w", authAddr, err)
 	}
 
+	// This dial must also present the CLI's own CLI_MTLS_* identity to
+	// tenant-registry — same gap as the auth dial dialAuthClient now
+	// closes above, just against a second peer this file dials
+	// directly rather than through dialClients. Before this fix,
+	// `ration tenant create`/`ration tenant list` were the one CLI
+	// command pair that never passed any mTLS DialOption at all to
+	// either peer they talk to, even though tenant-registry's own
+	// server (services/tenant-registry/cmd/tenant-registry/main.go)
+	// enables mTLS the identical way auth's does.
+	mtlsCfg, err := mtls.LoadFromEnv("CLI")
+	if err != nil {
+		return nil, fmt.Errorf("load mTLS config: %w", err)
+	}
+	tenantRegistryDialOpt, err := mtlsCfg.WithDefaultServerName("tenant-registry").DialOption()
+	if err != nil {
+		return nil, fmt.Errorf("mTLS dial option for tenant-registry: %w", err)
+	}
+
 	client, err := tenantregistryclient.Dial(tenantRegistryAddr,
+		tenantRegistryDialOpt,
 		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(token)),
 		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(token)),
 	)

@@ -91,7 +91,22 @@ func run(log *slog.Logger) error {
 	// ListDeposits/MarkDepositReceived call starts failing the moment
 	// RATION_LEDGER_REQUIRE_TENANT_AUTH is enforced, breaking webhook
 	// settlement entirely.
-	authClient, err := authclient.Dial(cfg.AuthAddr)
+	//
+	// This dial must present webhook-ingestion's own
+	// WEBHOOK_INGESTION_MTLS_* identity to auth, same as the
+	// ledger-core dial below — auth's server requires and verifies a
+	// client cert the moment AUTH_MTLS_ENABLED is true, and a
+	// plaintext dial against that listener fails the TLS handshake
+	// outright, not a graceful degrade. Mirrors gateway's own
+	// authMTLS/authDialCreds pattern
+	// (services/gateway/cmd/gateway/main.go).
+	authMTLS := cfg.MTLS
+	authMTLS.ServerName = "auth"
+	authDialCreds, err := authMTLS.DialOption()
+	if err != nil {
+		return err
+	}
+	authClient, err := authclient.Dial(cfg.AuthAddr, authDialCreds)
 	if err != nil {
 		return err
 	}
