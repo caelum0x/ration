@@ -255,10 +255,36 @@ func (s *Service) suspendAfterFailure(ctx context.Context, awCardID string) {
 	_, _ = s.airwallex.SetCardControls(ctx, awCardID, airwallex.CardControls{LimitMinorUnits: 0})
 }
 
-// AdjustCardLimit changes a card's spend limit, adjusting the backing
-// ledger hold by the delta (an increase re-checks reserve-floor headroom
-// and places an additional HOLD; a decrease places a RELEASE for the
-// freed amount) before pushing the new limit to Airwallex.
+// revertCardControls is AdjustCardLimit's mirror of suspendAfterFailure:
+// best-effort reverts an Airwallex card's limit back to its
+// pre-adjustment value after the corresponding ledger mutation failed, so
+// Airwallex's view of the limit doesn't stay ahead of what the ledger
+// actually backs. Errors here are deliberately not surfaced — the
+// primary error (the ledger failure) is what matters to the caller, but
+// a failed revert is still worth logging loudly so an operator can
+// reconcile Airwallex's limit by hand if it happens.
+func (s *Service) revertCardControls(ctx context.Context, card *cardissuancepb.Card, limitMinorUnits int64) {
+	if _, err := s.airwallex.SetCardControls(ctx, card.GetAirwallexCardId(), airwallex.CardControls{
+		LimitMinorUnits: limitMinorUnits,
+		LimitInterval:   card.GetLimitInterval(),
+	}); err != nil {
+		slog.Default().Error("cardsvc: failed to revert airwallex controls after ledger failure",
+			"error", err, "card_id", card.GetId(), "airwallex_card_id", card.GetAirwallexCardId())
+	}
+}
+
+// AdjustCardLimit changes a card's spend limit. Same order/compensation
+// discipline as IssueCard (and for the same reason): Airwallex is called
+// first, and the backing ledger mutation (an increase places an
+// additional HOLD after re-checking reserve-floor headroom; a decrease
+// places a RELEASE for the freed amount) is only applied once Airwallex
+// has accepted the new limit. If the ledger mutation then fails, the
+// Airwallex limit is reverted back to its pre-adjustment value so a
+// retry re-applies the ledger mutation exactly once instead of stacking
+// an unbounded HOLD/RELEASE on every failed retry (the reserve-floor
+// headroom leak documented in round 14 — this was previously ledger
+// first, Airwallex second, with no rollback on the Airwallex failure
+// path).
 func (s *Service) AdjustCardLimit(ctx context.Context, req *cardissuancepb.AdjustCardLimitRequest) (*cardissuancepb.Card, error) {
 	if req.GetNewLimitMinorUnits() < 0 {
 		return nil, fmt.Errorf("cardsvc: new_limit_minor_units must be >= 0, got %d", req.GetNewLimitMinorUnits())
@@ -274,8 +300,10 @@ func (s *Service) AdjustCardLimit(ctx context.Context, req *cardissuancepb.Adjus
 		return nil, fmt.Errorf("cardsvc: %s is closed and cannot be adjusted", req.GetCardId())
 	}
 
-	delta := req.GetNewLimitMinorUnits() - card.GetLimitMinorUnits()
+	oldLimit := card.GetLimitMinorUnits()
+	delta := req.GetNewLimitMinorUnits() - oldLimit
 	if delta > 0 {
+		// Read-only: safe to do before touching Airwallex or the ledger.
 		check, err := s.ledger.CheckReserveFloor(ctx, card.GetTenantId(), delta)
 		if err != nil {
 			return nil, fmt.Errorf("cardsvc: check reserve floor for %s: %w", card.GetTenantId(), err)
@@ -287,6 +315,16 @@ func (s *Service) AdjustCardLimit(ctx context.Context, req *cardissuancepb.Adjus
 				card.GetTenantId(), delta, check.GetHeadroomMinorUnits(),
 			)
 		}
+	}
+
+	if _, err := s.airwallex.SetCardControls(ctx, card.GetAirwallexCardId(), airwallex.CardControls{
+		LimitMinorUnits: req.GetNewLimitMinorUnits(),
+		LimitInterval:   card.GetLimitInterval(),
+	}); err != nil {
+		return nil, fmt.Errorf("cardsvc: update airwallex controls: %w", err)
+	}
+
+	if delta > 0 {
 		if _, err := s.ledger.ApplyEntry(ctx, &ledgerpb.ApplyEntryRequest{
 			TenantId:       card.GetTenantId(),
 			Type:           commonpb.LedgerEntryType_LEDGER_ENTRY_TYPE_HOLD,
@@ -295,6 +333,7 @@ func (s *Service) AdjustCardLimit(ctx context.Context, req *cardissuancepb.Adjus
 			IdempotencyKey: s.newID("card-hold-increase"),
 			Memo:           req.GetReason(),
 		}); err != nil {
+			s.revertCardControls(ctx, card, oldLimit)
 			return nil, fmt.Errorf("cardsvc: apply limit increase hold for %s: %w", card.GetTenantId(), err)
 		}
 	} else if delta < 0 {
@@ -306,15 +345,9 @@ func (s *Service) AdjustCardLimit(ctx context.Context, req *cardissuancepb.Adjus
 			IdempotencyKey: s.newID("card-hold-release"),
 			Memo:           req.GetReason(),
 		}); err != nil {
+			s.revertCardControls(ctx, card, oldLimit)
 			return nil, fmt.Errorf("cardsvc: release freed hold for %s: %w", card.GetTenantId(), err)
 		}
-	}
-
-	if _, err := s.airwallex.SetCardControls(ctx, card.GetAirwallexCardId(), airwallex.CardControls{
-		LimitMinorUnits: req.GetNewLimitMinorUnits(),
-		LimitInterval:   card.GetLimitInterval(),
-	}); err != nil {
-		return nil, fmt.Errorf("cardsvc: update airwallex controls: %w", err)
 	}
 
 	s.mu.Lock()
@@ -333,12 +366,24 @@ func (s *Service) AdjustCardLimit(ctx context.Context, req *cardissuancepb.Adjus
 	return updated, nil
 }
 
-// CloseCard permanently closes a card: releases the card's full
-// remaining ledger hold back to the tenant's available balance (the
-// mirror image of IssueCard's HOLD) and marks it closed via Airwallex.
+// CloseCard permanently closes a card: marks it closed via Airwallex
+// first, then releases the card's full remaining ledger hold back to the
+// tenant's available balance (the mirror image of IssueCard's HOLD).
 // Closing an already-closed card is idempotent — it returns the card
 // unchanged rather than erroring or double-releasing a hold that was
 // already freed.
+//
+// Airwallex is called before the ledger release (the reverse of this
+// method's pre-round-15 order) for the same reserve-floor-leak reason as
+// AdjustCardLimit's reorder: the old order released the ledger hold
+// first, so a subsequent Airwallex failure left a real card still active
+// with its original limit but no backing hold, and a naive retry would
+// re-release the same hold a second time. Airwallex's own close action is
+// terminal — there is no "reopen" to compensate with if the ledger
+// release below then fails — but that failure mode is fail-safe, not a
+// leak: the card is already closed (can't spend further) and the ledger
+// hold simply stays in place until a retry successfully releases it,
+// instead of being leaked twice.
 func (s *Service) CloseCard(ctx context.Context, cardID string) (*cardissuancepb.Card, error) {
 	s.mu.Lock()
 	card, ok := s.cards[cardID]
@@ -349,6 +394,10 @@ func (s *Service) CloseCard(ctx context.Context, cardID string) (*cardissuancepb
 
 	if card.GetStatus() == commonpb.CardStatus_CARD_STATUS_CLOSED {
 		return cloneCard(card), nil
+	}
+
+	if _, err := s.airwallex.CloseCard(ctx, card.GetAirwallexCardId()); err != nil {
+		return nil, fmt.Errorf("cardsvc: close via airwallex: %w", err)
 	}
 
 	if card.GetLimitMinorUnits() > 0 {
@@ -362,10 +411,6 @@ func (s *Service) CloseCard(ctx context.Context, cardID string) (*cardissuancepb
 		}); err != nil {
 			return nil, fmt.Errorf("cardsvc: release hold on close for %s: %w", card.GetTenantId(), err)
 		}
-	}
-
-	if _, err := s.airwallex.CloseCard(ctx, card.GetAirwallexCardId()); err != nil {
-		return nil, fmt.Errorf("cardsvc: close via airwallex: %w", err)
 	}
 
 	s.mu.Lock()
