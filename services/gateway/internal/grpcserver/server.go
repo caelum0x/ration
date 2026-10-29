@@ -34,6 +34,7 @@ type CardIssuanceClient interface {
 	IssueCard(ctx context.Context, req *cardissuancepb.IssueCardRequest) (*cardissuancepb.Card, error)
 	AdjustCardLimit(ctx context.Context, req *cardissuancepb.AdjustCardLimitRequest) (*cardissuancepb.Card, error)
 	GetCard(ctx context.Context, cardID string) (*cardissuancepb.Card, error)
+	CloseCard(ctx context.Context, cardID string) (*cardissuancepb.Card, error)
 	ListCards(ctx context.Context, tenantID string) ([]*cardissuancepb.Card, error)
 	RationBridgeFunding(ctx context.Context, req *cardissuancepb.RationBridgeFundingRequest) (*cardissuancepb.RationBridgeFundingResponse, error)
 }
@@ -138,6 +139,16 @@ func (s *Server) GetCard(ctx context.Context, req *gatewaypb.GetCardRequest) (*g
 	if err != nil {
 		return nil, err
 	}
+	return toGatewayCard(c), nil
+}
+
+// CloseCard implements gatewaypb.GatewayServer.
+func (s *Server) CloseCard(ctx context.Context, req *gatewaypb.CloseCardRequest) (*gatewaypb.Card, error) {
+	c, err := s.cards.CloseCard(ctx, req.GetCardId())
+	if err != nil {
+		return nil, err
+	}
+	s.publish(c.GetTenantId(), "card", fmt.Sprintf("closed card %s", c.GetId()))
 	return toGatewayCard(c), nil
 }
 

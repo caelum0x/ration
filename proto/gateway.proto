@@ -17,6 +17,10 @@ service Gateway {
   rpc GetCard(GetCardRequest) returns (Card);
   rpc ListCards(ListCardsRequest) returns (ListCardsResponse);
 
+  // CloseCard permanently closes a card — see card_issuance.proto's
+  // identical RPC, which this is a direct fan-out to (docs/adr/0004).
+  rpc CloseCard(CloseCardRequest) returns (Card);
+
   rpc RationBridgeFunding(RationBridgeFundingRequest) returns (RationBridgeFundingResponse);
 
   rpc SimulateDeposit(SimulateDepositRequest) returns (SimulateDepositResponse);
@@ -64,6 +68,10 @@ message AdjustCardLimitRequest {
 }
 
 message GetCardRequest {
+  string card_id = 1;
+}
+
+message CloseCardRequest {
   string card_id = 1;
 }
 

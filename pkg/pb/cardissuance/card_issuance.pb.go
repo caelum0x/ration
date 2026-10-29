@@ -310,6 +310,50 @@ func (x *GetCardRequest) GetCardId() string {
 	return ""
 }
 
+type CloseCardRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CardId        string                 `protobuf:"bytes,1,opt,name=card_id,json=cardId,proto3" json:"card_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CloseCardRequest) Reset() {
+	*x = CloseCardRequest{}
+	mi := &file_card_issuance_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CloseCardRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CloseCardRequest) ProtoMessage() {}
+
+func (x *CloseCardRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_card_issuance_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CloseCardRequest.ProtoReflect.Descriptor instead.
+func (*CloseCardRequest) Descriptor() ([]byte, []int) {
+	return file_card_issuance_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CloseCardRequest) GetCardId() string {
+	if x != nil {
+		return x.CardId
+	}
+	return ""
+}
+
 type ListCardsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
@@ -319,7 +363,7 @@ type ListCardsRequest struct {
 
 func (x *ListCardsRequest) Reset() {
 	*x = ListCardsRequest{}
-	mi := &file_card_issuance_proto_msgTypes[4]
+	mi := &file_card_issuance_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -331,7 +375,7 @@ func (x *ListCardsRequest) String() string {
 func (*ListCardsRequest) ProtoMessage() {}
 
 func (x *ListCardsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_card_issuance_proto_msgTypes[4]
+	mi := &file_card_issuance_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -344,7 +388,7 @@ func (x *ListCardsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCardsRequest.ProtoReflect.Descriptor instead.
 func (*ListCardsRequest) Descriptor() ([]byte, []int) {
-	return file_card_issuance_proto_rawDescGZIP(), []int{4}
+	return file_card_issuance_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ListCardsRequest) GetTenantId() string {
@@ -363,7 +407,7 @@ type ListCardsResponse struct {
 
 func (x *ListCardsResponse) Reset() {
 	*x = ListCardsResponse{}
-	mi := &file_card_issuance_proto_msgTypes[5]
+	mi := &file_card_issuance_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -375,7 +419,7 @@ func (x *ListCardsResponse) String() string {
 func (*ListCardsResponse) ProtoMessage() {}
 
 func (x *ListCardsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_card_issuance_proto_msgTypes[5]
+	mi := &file_card_issuance_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -388,7 +432,7 @@ func (x *ListCardsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCardsResponse.ProtoReflect.Descriptor instead.
 func (*ListCardsResponse) Descriptor() ([]byte, []int) {
-	return file_card_issuance_proto_rawDescGZIP(), []int{5}
+	return file_card_issuance_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListCardsResponse) GetCards() []*Card {
@@ -409,7 +453,7 @@ type RationBridgeFundingRequest struct {
 
 func (x *RationBridgeFundingRequest) Reset() {
 	*x = RationBridgeFundingRequest{}
-	mi := &file_card_issuance_proto_msgTypes[6]
+	mi := &file_card_issuance_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -421,7 +465,7 @@ func (x *RationBridgeFundingRequest) String() string {
 func (*RationBridgeFundingRequest) ProtoMessage() {}
 
 func (x *RationBridgeFundingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_card_issuance_proto_msgTypes[6]
+	mi := &file_card_issuance_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -434,7 +478,7 @@ func (x *RationBridgeFundingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RationBridgeFundingRequest.ProtoReflect.Descriptor instead.
 func (*RationBridgeFundingRequest) Descriptor() ([]byte, []int) {
-	return file_card_issuance_proto_rawDescGZIP(), []int{6}
+	return file_card_issuance_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *RationBridgeFundingRequest) GetTenantId() string {
@@ -469,7 +513,7 @@ type RationBridgeFundingResponse struct {
 
 func (x *RationBridgeFundingResponse) Reset() {
 	*x = RationBridgeFundingResponse{}
-	mi := &file_card_issuance_proto_msgTypes[7]
+	mi := &file_card_issuance_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -481,7 +525,7 @@ func (x *RationBridgeFundingResponse) String() string {
 func (*RationBridgeFundingResponse) ProtoMessage() {}
 
 func (x *RationBridgeFundingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_card_issuance_proto_msgTypes[7]
+	mi := &file_card_issuance_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -494,7 +538,7 @@ func (x *RationBridgeFundingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RationBridgeFundingResponse.ProtoReflect.Descriptor instead.
 func (*RationBridgeFundingResponse) Descriptor() ([]byte, []int) {
-	return file_card_issuance_proto_rawDescGZIP(), []int{7}
+	return file_card_issuance_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RationBridgeFundingResponse) GetGrantedMinorUnits() int64 {
@@ -544,6 +588,8 @@ const file_card_issuance_proto_rawDesc = "" +
 	"\x15new_limit_minor_units\x18\x02 \x01(\x03R\x12newLimitMinorUnits\x12\x16\n" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\")\n" +
 	"\x0eGetCardRequest\x12\x17\n" +
+	"\acard_id\x18\x01 \x01(\tR\x06cardId\"+\n" +
+	"\x10CloseCardRequest\x12\x17\n" +
 	"\acard_id\x18\x01 \x01(\tR\x06cardId\"/\n" +
 	"\x10ListCardsRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"G\n" +
@@ -556,12 +602,13 @@ const file_card_issuance_proto_rawDesc = "" +
 	"\x1bRationBridgeFundingResponse\x12.\n" +
 	"\x13granted_minor_units\x18\x01 \x01(\x03R\x11grantedMinorUnits\x12#\n" +
 	"\rfully_granted\x18\x02 \x01(\bR\ffullyGranted\x12 \n" +
-	"\vexplanation\x18\x03 \x01(\tR\vexplanation2\xf7\x03\n" +
+	"\vexplanation\x18\x03 \x01(\tR\vexplanation2\xcc\x04\n" +
 	"\fCardIssuance\x12S\n" +
 	"\tIssueCard\x12(.ration.cardissuance.v1.IssueCardRequest\x1a\x1c.ration.cardissuance.v1.Card\x12_\n" +
 	"\x0fAdjustCardLimit\x12..ration.cardissuance.v1.AdjustCardLimitRequest\x1a\x1c.ration.cardissuance.v1.Card\x12O\n" +
 	"\aGetCard\x12&.ration.cardissuance.v1.GetCardRequest\x1a\x1c.ration.cardissuance.v1.Card\x12`\n" +
-	"\tListCards\x12(.ration.cardissuance.v1.ListCardsRequest\x1a).ration.cardissuance.v1.ListCardsResponse\x12~\n" +
+	"\tListCards\x12(.ration.cardissuance.v1.ListCardsRequest\x1a).ration.cardissuance.v1.ListCardsResponse\x12S\n" +
+	"\tCloseCard\x12(.ration.cardissuance.v1.CloseCardRequest\x1a\x1c.ration.cardissuance.v1.Card\x12~\n" +
 	"\x13RationBridgeFunding\x122.ration.cardissuance.v1.RationBridgeFundingRequest\x1a3.ration.cardissuance.v1.RationBridgeFundingResponseB0Z.github.com/caelum0x/ration/pkg/pb/cardissuanceb\x06proto3"
 
 var (
@@ -576,33 +623,36 @@ func file_card_issuance_proto_rawDescGZIP() []byte {
 	return file_card_issuance_proto_rawDescData
 }
 
-var file_card_issuance_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_card_issuance_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_card_issuance_proto_goTypes = []any{
 	(*Card)(nil),                        // 0: ration.cardissuance.v1.Card
 	(*IssueCardRequest)(nil),            // 1: ration.cardissuance.v1.IssueCardRequest
 	(*AdjustCardLimitRequest)(nil),      // 2: ration.cardissuance.v1.AdjustCardLimitRequest
 	(*GetCardRequest)(nil),              // 3: ration.cardissuance.v1.GetCardRequest
-	(*ListCardsRequest)(nil),            // 4: ration.cardissuance.v1.ListCardsRequest
-	(*ListCardsResponse)(nil),           // 5: ration.cardissuance.v1.ListCardsResponse
-	(*RationBridgeFundingRequest)(nil),  // 6: ration.cardissuance.v1.RationBridgeFundingRequest
-	(*RationBridgeFundingResponse)(nil), // 7: ration.cardissuance.v1.RationBridgeFundingResponse
-	(common.CardStatus)(0),              // 8: ration.common.v1.CardStatus
+	(*CloseCardRequest)(nil),            // 4: ration.cardissuance.v1.CloseCardRequest
+	(*ListCardsRequest)(nil),            // 5: ration.cardissuance.v1.ListCardsRequest
+	(*ListCardsResponse)(nil),           // 6: ration.cardissuance.v1.ListCardsResponse
+	(*RationBridgeFundingRequest)(nil),  // 7: ration.cardissuance.v1.RationBridgeFundingRequest
+	(*RationBridgeFundingResponse)(nil), // 8: ration.cardissuance.v1.RationBridgeFundingResponse
+	(common.CardStatus)(0),              // 9: ration.common.v1.CardStatus
 }
 var file_card_issuance_proto_depIdxs = []int32{
-	8, // 0: ration.cardissuance.v1.Card.status:type_name -> ration.common.v1.CardStatus
+	9, // 0: ration.cardissuance.v1.Card.status:type_name -> ration.common.v1.CardStatus
 	0, // 1: ration.cardissuance.v1.ListCardsResponse.cards:type_name -> ration.cardissuance.v1.Card
 	1, // 2: ration.cardissuance.v1.CardIssuance.IssueCard:input_type -> ration.cardissuance.v1.IssueCardRequest
 	2, // 3: ration.cardissuance.v1.CardIssuance.AdjustCardLimit:input_type -> ration.cardissuance.v1.AdjustCardLimitRequest
 	3, // 4: ration.cardissuance.v1.CardIssuance.GetCard:input_type -> ration.cardissuance.v1.GetCardRequest
-	4, // 5: ration.cardissuance.v1.CardIssuance.ListCards:input_type -> ration.cardissuance.v1.ListCardsRequest
-	6, // 6: ration.cardissuance.v1.CardIssuance.RationBridgeFunding:input_type -> ration.cardissuance.v1.RationBridgeFundingRequest
-	0, // 7: ration.cardissuance.v1.CardIssuance.IssueCard:output_type -> ration.cardissuance.v1.Card
-	0, // 8: ration.cardissuance.v1.CardIssuance.AdjustCardLimit:output_type -> ration.cardissuance.v1.Card
-	0, // 9: ration.cardissuance.v1.CardIssuance.GetCard:output_type -> ration.cardissuance.v1.Card
-	5, // 10: ration.cardissuance.v1.CardIssuance.ListCards:output_type -> ration.cardissuance.v1.ListCardsResponse
-	7, // 11: ration.cardissuance.v1.CardIssuance.RationBridgeFunding:output_type -> ration.cardissuance.v1.RationBridgeFundingResponse
-	7, // [7:12] is the sub-list for method output_type
-	2, // [2:7] is the sub-list for method input_type
+	5, // 5: ration.cardissuance.v1.CardIssuance.ListCards:input_type -> ration.cardissuance.v1.ListCardsRequest
+	4, // 6: ration.cardissuance.v1.CardIssuance.CloseCard:input_type -> ration.cardissuance.v1.CloseCardRequest
+	7, // 7: ration.cardissuance.v1.CardIssuance.RationBridgeFunding:input_type -> ration.cardissuance.v1.RationBridgeFundingRequest
+	0, // 8: ration.cardissuance.v1.CardIssuance.IssueCard:output_type -> ration.cardissuance.v1.Card
+	0, // 9: ration.cardissuance.v1.CardIssuance.AdjustCardLimit:output_type -> ration.cardissuance.v1.Card
+	0, // 10: ration.cardissuance.v1.CardIssuance.GetCard:output_type -> ration.cardissuance.v1.Card
+	6, // 11: ration.cardissuance.v1.CardIssuance.ListCards:output_type -> ration.cardissuance.v1.ListCardsResponse
+	0, // 12: ration.cardissuance.v1.CardIssuance.CloseCard:output_type -> ration.cardissuance.v1.Card
+	8, // 13: ration.cardissuance.v1.CardIssuance.RationBridgeFunding:output_type -> ration.cardissuance.v1.RationBridgeFundingResponse
+	8, // [8:14] is the sub-list for method output_type
+	2, // [2:8] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
 	2, // [2:2] is the sub-list for extension extendee
 	0, // [0:2] is the sub-list for field type_name
@@ -619,7 +669,7 @@ func file_card_issuance_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_card_issuance_proto_rawDesc), len(file_card_issuance_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

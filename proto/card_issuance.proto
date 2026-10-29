@@ -26,6 +26,12 @@ service CardIssuance {
   rpc GetCard(GetCardRequest) returns (Card);
   rpc ListCards(ListCardsRequest) returns (ListCardsResponse);
 
+  // CloseCard permanently closes a card: releases its full remaining
+  // ledger hold back to the tenant's available balance and marks the
+  // card CARD_STATUS_CLOSED via Airwallex. Idempotent — closing an
+  // already-closed card returns it unchanged rather than erroring.
+  rpc CloseCard(CloseCardRequest) returns (Card);
+
   rpc RationBridgeFunding(RationBridgeFundingRequest) returns (RationBridgeFundingResponse);
 }
 
@@ -56,6 +62,10 @@ message AdjustCardLimitRequest {
 }
 
 message GetCardRequest {
+  string card_id = 1;
+}
+
+message CloseCardRequest {
   string card_id = 1;
 }
 

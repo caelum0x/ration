@@ -7,6 +7,7 @@ import (
 	"time"
 
 	cardissuancepb "github.com/caelum0x/ration/pkg/pb/cardissuance"
+	commonpb "github.com/caelum0x/ration/pkg/pb/common"
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
 	"github.com/caelum0x/ration/services/gateway/internal/activity"
@@ -104,6 +105,16 @@ func (f *fakeCardIssuance) GetCard(ctx context.Context, cardID string) (*cardiss
 	if !ok {
 		return nil, fmt.Errorf("card %s not found", cardID)
 	}
+	return c, nil
+}
+
+func (f *fakeCardIssuance) CloseCard(ctx context.Context, cardID string) (*cardissuancepb.Card, error) {
+	c, ok := f.cards[cardID]
+	if !ok {
+		return nil, fmt.Errorf("card %s not found", cardID)
+	}
+	c.Status = commonpb.CardStatus_CARD_STATUS_CLOSED
+	c.LimitMinorUnits = 0
 	return c, nil
 }
 

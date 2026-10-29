@@ -93,6 +93,12 @@ func (c *Client) GetCard(ctx context.Context, cardID string) (*cardissuancepb.Ca
 	return c.stub.GetCard(ctx, &cardissuancepb.GetCardRequest{CardId: cardID})
 }
 
+func (c *Client) CloseCard(ctx context.Context, cardID string) (*cardissuancepb.Card, error) {
+	ctx, cancel := c.withTimeout(ctx)
+	defer cancel()
+	return c.stub.CloseCard(ctx, &cardissuancepb.CloseCardRequest{CardId: cardID})
+}
+
 func (c *Client) ListCards(ctx context.Context, tenantID string) ([]*cardissuancepb.Card, error) {
 	ctx, cancel := c.withTimeout(ctx)
 	defer cancel()

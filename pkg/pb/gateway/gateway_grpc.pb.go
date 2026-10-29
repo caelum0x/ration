@@ -23,6 +23,7 @@ const (
 	Gateway_AdjustCardLimit_FullMethodName      = "/ration.gateway.v1.Gateway/AdjustCardLimit"
 	Gateway_GetCard_FullMethodName              = "/ration.gateway.v1.Gateway/GetCard"
 	Gateway_ListCards_FullMethodName            = "/ration.gateway.v1.Gateway/ListCards"
+	Gateway_CloseCard_FullMethodName            = "/ration.gateway.v1.Gateway/CloseCard"
 	Gateway_RationBridgeFunding_FullMethodName  = "/ration.gateway.v1.Gateway/RationBridgeFunding"
 	Gateway_SimulateDeposit_FullMethodName      = "/ration.gateway.v1.Gateway/SimulateDeposit"
 	Gateway_StreamActivity_FullMethodName       = "/ration.gateway.v1.Gateway/StreamActivity"
@@ -43,6 +44,9 @@ type GatewayClient interface {
 	AdjustCardLimit(ctx context.Context, in *AdjustCardLimitRequest, opts ...grpc.CallOption) (*Card, error)
 	GetCard(ctx context.Context, in *GetCardRequest, opts ...grpc.CallOption) (*Card, error)
 	ListCards(ctx context.Context, in *ListCardsRequest, opts ...grpc.CallOption) (*ListCardsResponse, error)
+	// CloseCard permanently closes a card — see card_issuance.proto's
+	// identical RPC, which this is a direct fan-out to (docs/adr/0004).
+	CloseCard(ctx context.Context, in *CloseCardRequest, opts ...grpc.CallOption) (*Card, error)
 	RationBridgeFunding(ctx context.Context, in *RationBridgeFundingRequest, opts ...grpc.CallOption) (*RationBridgeFundingResponse, error)
 	SimulateDeposit(ctx context.Context, in *SimulateDepositRequest, opts ...grpc.CallOption) (*SimulateDepositResponse, error)
 	StreamActivity(ctx context.Context, in *StreamActivityRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ActivityEvent], error)
@@ -102,6 +106,16 @@ func (c *gatewayClient) ListCards(ctx context.Context, in *ListCardsRequest, opt
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListCardsResponse)
 	err := c.cc.Invoke(ctx, Gateway_ListCards_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayClient) CloseCard(ctx context.Context, in *CloseCardRequest, opts ...grpc.CallOption) (*Card, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Card)
+	err := c.cc.Invoke(ctx, Gateway_CloseCard_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +185,9 @@ type GatewayServer interface {
 	AdjustCardLimit(context.Context, *AdjustCardLimitRequest) (*Card, error)
 	GetCard(context.Context, *GetCardRequest) (*Card, error)
 	ListCards(context.Context, *ListCardsRequest) (*ListCardsResponse, error)
+	// CloseCard permanently closes a card — see card_issuance.proto's
+	// identical RPC, which this is a direct fan-out to (docs/adr/0004).
+	CloseCard(context.Context, *CloseCardRequest) (*Card, error)
 	RationBridgeFunding(context.Context, *RationBridgeFundingRequest) (*RationBridgeFundingResponse, error)
 	SimulateDeposit(context.Context, *SimulateDepositRequest) (*SimulateDepositResponse, error)
 	StreamActivity(*StreamActivityRequest, grpc.ServerStreamingServer[ActivityEvent]) error
@@ -207,6 +224,9 @@ func (UnimplementedGatewayServer) GetCard(context.Context, *GetCardRequest) (*Ca
 }
 func (UnimplementedGatewayServer) ListCards(context.Context, *ListCardsRequest) (*ListCardsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListCards not implemented")
+}
+func (UnimplementedGatewayServer) CloseCard(context.Context, *CloseCardRequest) (*Card, error) {
+	return nil, status.Error(codes.Unimplemented, "method CloseCard not implemented")
 }
 func (UnimplementedGatewayServer) RationBridgeFunding(context.Context, *RationBridgeFundingRequest) (*RationBridgeFundingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RationBridgeFunding not implemented")
@@ -313,6 +333,24 @@ func _Gateway_ListCards_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Gateway_CloseCard_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CloseCardRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).CloseCard(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_CloseCard_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).CloseCard(ctx, req.(*CloseCardRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Gateway_RationBridgeFunding_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RationBridgeFundingRequest)
 	if err := dec(in); err != nil {
@@ -400,6 +438,10 @@ var Gateway_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListCards",
 			Handler:    _Gateway_ListCards_Handler,
+		},
+		{
+			MethodName: "CloseCard",
+			Handler:    _Gateway_CloseCard_Handler,
 		},
 		{
 			MethodName: "RationBridgeFunding",

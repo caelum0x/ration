@@ -28,12 +28,13 @@ import (
 func newCardCmd(flags *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "card",
-		Short: "Issue and manage cards via the gateway (IssueCard, AdjustCardLimit, GetCard, ListCards)",
+		Short: "Issue and manage cards via the gateway (IssueCard, AdjustCardLimit, GetCard, ListCards, CloseCard)",
 	}
 	cmd.AddCommand(newCardIssueCmd(flags))
 	cmd.AddCommand(newCardAdjustLimitCmd(flags))
 	cmd.AddCommand(newCardGetCmd(flags))
 	cmd.AddCommand(newCardListCmd(flags))
+	cmd.AddCommand(newCardCloseCmd(flags))
 	return cmd
 }
 
@@ -223,6 +224,50 @@ without the rest of status's balance/decisions output.`,
 	}
 
 	cmd.Flags().StringVar(&tenantID, "tenant", "", "tenant ID to list cards for (required)")
+
+	return cmd
+}
+
+func newCardCloseCmd(flags *globalFlags) *cobra.Command {
+	var cardID string
+
+	cmd := &cobra.Command{
+		Use:   "close",
+		Short: "Permanently close a card via gateway.CloseCard",
+		Long: `close calls gateway.CloseCard, which releases the card's full remaining
+spend-limit HOLD back to the tenant's available balance and marks the
+card CARD_STATUS_CLOSED via Airwallex. Use this to turn off a leaked
+credential, an offboarded cardholder's card, or any card that should
+never spend again — before this command, an issued card could have its
+limit raised or lowered but never be shut off entirely.
+
+Closing an already-closed card is a no-op (not an error). Adjusting a
+closed card's limit is rejected.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if cardID == "" {
+				return fmt.Errorf("card close: --card is required")
+			}
+
+			c, err := dialClients(cmd.Context(), flags.ledgerAddr, flags.gatewayAddr, flags.authAddr, flags.auditAddr)
+			if err != nil {
+				return err
+			}
+			defer c.close()
+
+			ctx, cancel := context.WithTimeout(cmd.Context(), flags.timeout)
+			defer cancel()
+
+			card, err := c.Gateway.CloseCard(ctx, &gatewaypb.CloseCardRequest{CardId: cardID})
+			if err != nil {
+				return fmt.Errorf("card close: %w", err)
+			}
+
+			printCard(cmd.OutOrStdout(), card)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&cardID, "card", "", "card ID to close (required)")
 
 	return cmd
 }

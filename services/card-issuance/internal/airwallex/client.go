@@ -87,5 +87,11 @@ type Client interface {
 	IssueCard(ctx context.Context, params IssueCardParams) (*Card, error)
 	GetCard(ctx context.Context, cardID string) (*Card, error)
 	SetCardControls(ctx context.Context, cardID string, controls CardControls) (*Card, error)
+	// CloseCard permanently closes a card (CardStatusClosed) — the
+	// Airwallex-side counterpart to this package's own CardStatusClosed
+	// constant, which existed since the original build but, until this
+	// method, nothing ever called: SetCardControls can only change a
+	// card's limit/controls, never its status.
+	CloseCard(ctx context.Context, cardID string) (*Card, error)
 	ListGlobalAccountTransactions(ctx context.Context, params ListGlobalAccountTransactionsParams) ([]Transaction, error)
 }

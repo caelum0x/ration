@@ -23,6 +23,7 @@ const (
 	CardIssuance_AdjustCardLimit_FullMethodName     = "/ration.cardissuance.v1.CardIssuance/AdjustCardLimit"
 	CardIssuance_GetCard_FullMethodName             = "/ration.cardissuance.v1.CardIssuance/GetCard"
 	CardIssuance_ListCards_FullMethodName           = "/ration.cardissuance.v1.CardIssuance/ListCards"
+	CardIssuance_CloseCard_FullMethodName           = "/ration.cardissuance.v1.CardIssuance/CloseCard"
 	CardIssuance_RationBridgeFunding_FullMethodName = "/ration.cardissuance.v1.CardIssuance/RationBridgeFunding"
 )
 
@@ -49,6 +50,11 @@ type CardIssuanceClient interface {
 	AdjustCardLimit(ctx context.Context, in *AdjustCardLimitRequest, opts ...grpc.CallOption) (*Card, error)
 	GetCard(ctx context.Context, in *GetCardRequest, opts ...grpc.CallOption) (*Card, error)
 	ListCards(ctx context.Context, in *ListCardsRequest, opts ...grpc.CallOption) (*ListCardsResponse, error)
+	// CloseCard permanently closes a card: releases its full remaining
+	// ledger hold back to the tenant's available balance and marks the
+	// card CARD_STATUS_CLOSED via Airwallex. Idempotent — closing an
+	// already-closed card returns it unchanged rather than erroring.
+	CloseCard(ctx context.Context, in *CloseCardRequest, opts ...grpc.CallOption) (*Card, error)
 	RationBridgeFunding(ctx context.Context, in *RationBridgeFundingRequest, opts ...grpc.CallOption) (*RationBridgeFundingResponse, error)
 }
 
@@ -100,6 +106,16 @@ func (c *cardIssuanceClient) ListCards(ctx context.Context, in *ListCardsRequest
 	return out, nil
 }
 
+func (c *cardIssuanceClient) CloseCard(ctx context.Context, in *CloseCardRequest, opts ...grpc.CallOption) (*Card, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Card)
+	err := c.cc.Invoke(ctx, CardIssuance_CloseCard_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *cardIssuanceClient) RationBridgeFunding(ctx context.Context, in *RationBridgeFundingRequest, opts ...grpc.CallOption) (*RationBridgeFundingResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RationBridgeFundingResponse)
@@ -133,6 +149,11 @@ type CardIssuanceServer interface {
 	AdjustCardLimit(context.Context, *AdjustCardLimitRequest) (*Card, error)
 	GetCard(context.Context, *GetCardRequest) (*Card, error)
 	ListCards(context.Context, *ListCardsRequest) (*ListCardsResponse, error)
+	// CloseCard permanently closes a card: releases its full remaining
+	// ledger hold back to the tenant's available balance and marks the
+	// card CARD_STATUS_CLOSED via Airwallex. Idempotent — closing an
+	// already-closed card returns it unchanged rather than erroring.
+	CloseCard(context.Context, *CloseCardRequest) (*Card, error)
 	RationBridgeFunding(context.Context, *RationBridgeFundingRequest) (*RationBridgeFundingResponse, error)
 	mustEmbedUnimplementedCardIssuanceServer()
 }
@@ -155,6 +176,9 @@ func (UnimplementedCardIssuanceServer) GetCard(context.Context, *GetCardRequest)
 }
 func (UnimplementedCardIssuanceServer) ListCards(context.Context, *ListCardsRequest) (*ListCardsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListCards not implemented")
+}
+func (UnimplementedCardIssuanceServer) CloseCard(context.Context, *CloseCardRequest) (*Card, error) {
+	return nil, status.Error(codes.Unimplemented, "method CloseCard not implemented")
 }
 func (UnimplementedCardIssuanceServer) RationBridgeFunding(context.Context, *RationBridgeFundingRequest) (*RationBridgeFundingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RationBridgeFunding not implemented")
@@ -252,6 +276,24 @@ func _CardIssuance_ListCards_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CardIssuance_CloseCard_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CloseCardRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CardIssuanceServer).CloseCard(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CardIssuance_CloseCard_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CardIssuanceServer).CloseCard(ctx, req.(*CloseCardRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CardIssuance_RationBridgeFunding_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RationBridgeFundingRequest)
 	if err := dec(in); err != nil {
@@ -292,6 +334,10 @@ var CardIssuance_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListCards",
 			Handler:    _CardIssuance_ListCards_Handler,
+		},
+		{
+			MethodName: "CloseCard",
+			Handler:    _CardIssuance_CloseCard_Handler,
 		},
 		{
 			MethodName: "RationBridgeFunding",

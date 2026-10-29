@@ -310,6 +310,50 @@ func (x *GetCardRequest) GetCardId() string {
 	return ""
 }
 
+type CloseCardRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CardId        string                 `protobuf:"bytes,1,opt,name=card_id,json=cardId,proto3" json:"card_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CloseCardRequest) Reset() {
+	*x = CloseCardRequest{}
+	mi := &file_gateway_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CloseCardRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CloseCardRequest) ProtoMessage() {}
+
+func (x *CloseCardRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_gateway_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CloseCardRequest.ProtoReflect.Descriptor instead.
+func (*CloseCardRequest) Descriptor() ([]byte, []int) {
+	return file_gateway_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CloseCardRequest) GetCardId() string {
+	if x != nil {
+		return x.CardId
+	}
+	return ""
+}
+
 type ListCardsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
@@ -319,7 +363,7 @@ type ListCardsRequest struct {
 
 func (x *ListCardsRequest) Reset() {
 	*x = ListCardsRequest{}
-	mi := &file_gateway_proto_msgTypes[4]
+	mi := &file_gateway_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -331,7 +375,7 @@ func (x *ListCardsRequest) String() string {
 func (*ListCardsRequest) ProtoMessage() {}
 
 func (x *ListCardsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[4]
+	mi := &file_gateway_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -344,7 +388,7 @@ func (x *ListCardsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCardsRequest.ProtoReflect.Descriptor instead.
 func (*ListCardsRequest) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{4}
+	return file_gateway_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ListCardsRequest) GetTenantId() string {
@@ -363,7 +407,7 @@ type ListCardsResponse struct {
 
 func (x *ListCardsResponse) Reset() {
 	*x = ListCardsResponse{}
-	mi := &file_gateway_proto_msgTypes[5]
+	mi := &file_gateway_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -375,7 +419,7 @@ func (x *ListCardsResponse) String() string {
 func (*ListCardsResponse) ProtoMessage() {}
 
 func (x *ListCardsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[5]
+	mi := &file_gateway_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -388,7 +432,7 @@ func (x *ListCardsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCardsResponse.ProtoReflect.Descriptor instead.
 func (*ListCardsResponse) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{5}
+	return file_gateway_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListCardsResponse) GetCards() []*Card {
@@ -409,7 +453,7 @@ type RationBridgeFundingRequest struct {
 
 func (x *RationBridgeFundingRequest) Reset() {
 	*x = RationBridgeFundingRequest{}
-	mi := &file_gateway_proto_msgTypes[6]
+	mi := &file_gateway_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -421,7 +465,7 @@ func (x *RationBridgeFundingRequest) String() string {
 func (*RationBridgeFundingRequest) ProtoMessage() {}
 
 func (x *RationBridgeFundingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[6]
+	mi := &file_gateway_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -434,7 +478,7 @@ func (x *RationBridgeFundingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RationBridgeFundingRequest.ProtoReflect.Descriptor instead.
 func (*RationBridgeFundingRequest) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{6}
+	return file_gateway_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *RationBridgeFundingRequest) GetTenantId() string {
@@ -469,7 +513,7 @@ type RationBridgeFundingResponse struct {
 
 func (x *RationBridgeFundingResponse) Reset() {
 	*x = RationBridgeFundingResponse{}
-	mi := &file_gateway_proto_msgTypes[7]
+	mi := &file_gateway_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -481,7 +525,7 @@ func (x *RationBridgeFundingResponse) String() string {
 func (*RationBridgeFundingResponse) ProtoMessage() {}
 
 func (x *RationBridgeFundingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[7]
+	mi := &file_gateway_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -494,7 +538,7 @@ func (x *RationBridgeFundingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RationBridgeFundingResponse.ProtoReflect.Descriptor instead.
 func (*RationBridgeFundingResponse) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{7}
+	return file_gateway_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RationBridgeFundingResponse) GetGrantedMinorUnits() int64 {
@@ -530,7 +574,7 @@ type SimulateDepositRequest struct {
 
 func (x *SimulateDepositRequest) Reset() {
 	*x = SimulateDepositRequest{}
-	mi := &file_gateway_proto_msgTypes[8]
+	mi := &file_gateway_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -542,7 +586,7 @@ func (x *SimulateDepositRequest) String() string {
 func (*SimulateDepositRequest) ProtoMessage() {}
 
 func (x *SimulateDepositRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[8]
+	mi := &file_gateway_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -555,7 +599,7 @@ func (x *SimulateDepositRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SimulateDepositRequest.ProtoReflect.Descriptor instead.
 func (*SimulateDepositRequest) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{8}
+	return file_gateway_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SimulateDepositRequest) GetTenantId() string {
@@ -595,7 +639,7 @@ type SimulateDepositResponse struct {
 
 func (x *SimulateDepositResponse) Reset() {
 	*x = SimulateDepositResponse{}
-	mi := &file_gateway_proto_msgTypes[9]
+	mi := &file_gateway_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -607,7 +651,7 @@ func (x *SimulateDepositResponse) String() string {
 func (*SimulateDepositResponse) ProtoMessage() {}
 
 func (x *SimulateDepositResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[9]
+	mi := &file_gateway_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -620,7 +664,7 @@ func (x *SimulateDepositResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SimulateDepositResponse.ProtoReflect.Descriptor instead.
 func (*SimulateDepositResponse) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{9}
+	return file_gateway_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SimulateDepositResponse) GetDepositId() string {
@@ -639,7 +683,7 @@ type StreamActivityRequest struct {
 
 func (x *StreamActivityRequest) Reset() {
 	*x = StreamActivityRequest{}
-	mi := &file_gateway_proto_msgTypes[10]
+	mi := &file_gateway_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -651,7 +695,7 @@ func (x *StreamActivityRequest) String() string {
 func (*StreamActivityRequest) ProtoMessage() {}
 
 func (x *StreamActivityRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[10]
+	mi := &file_gateway_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -664,7 +708,7 @@ func (x *StreamActivityRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamActivityRequest.ProtoReflect.Descriptor instead.
 func (*StreamActivityRequest) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{10}
+	return file_gateway_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *StreamActivityRequest) GetTenantId() string {
@@ -687,7 +731,7 @@ type ActivityEvent struct {
 
 func (x *ActivityEvent) Reset() {
 	*x = ActivityEvent{}
-	mi := &file_gateway_proto_msgTypes[11]
+	mi := &file_gateway_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -699,7 +743,7 @@ func (x *ActivityEvent) String() string {
 func (*ActivityEvent) ProtoMessage() {}
 
 func (x *ActivityEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[11]
+	mi := &file_gateway_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -712,7 +756,7 @@ func (x *ActivityEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActivityEvent.ProtoReflect.Descriptor instead.
 func (*ActivityEvent) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{11}
+	return file_gateway_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ActivityEvent) GetId() string {
@@ -766,7 +810,7 @@ type GetDashboardSnapshotRequest struct {
 
 func (x *GetDashboardSnapshotRequest) Reset() {
 	*x = GetDashboardSnapshotRequest{}
-	mi := &file_gateway_proto_msgTypes[12]
+	mi := &file_gateway_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -778,7 +822,7 @@ func (x *GetDashboardSnapshotRequest) String() string {
 func (*GetDashboardSnapshotRequest) ProtoMessage() {}
 
 func (x *GetDashboardSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[12]
+	mi := &file_gateway_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -791,7 +835,7 @@ func (x *GetDashboardSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDashboardSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*GetDashboardSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{12}
+	return file_gateway_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *GetDashboardSnapshotRequest) GetDecisionsPerTenant() int32 {
@@ -829,7 +873,7 @@ type TenantSnapshot struct {
 
 func (x *TenantSnapshot) Reset() {
 	*x = TenantSnapshot{}
-	mi := &file_gateway_proto_msgTypes[13]
+	mi := &file_gateway_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -841,7 +885,7 @@ func (x *TenantSnapshot) String() string {
 func (*TenantSnapshot) ProtoMessage() {}
 
 func (x *TenantSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[13]
+	mi := &file_gateway_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -854,7 +898,7 @@ func (x *TenantSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantSnapshot.ProtoReflect.Descriptor instead.
 func (*TenantSnapshot) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{13}
+	return file_gateway_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *TenantSnapshot) GetTenantId() string {
@@ -921,7 +965,7 @@ type AgentDecisionSummary struct {
 
 func (x *AgentDecisionSummary) Reset() {
 	*x = AgentDecisionSummary{}
-	mi := &file_gateway_proto_msgTypes[14]
+	mi := &file_gateway_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -933,7 +977,7 @@ func (x *AgentDecisionSummary) String() string {
 func (*AgentDecisionSummary) ProtoMessage() {}
 
 func (x *AgentDecisionSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[14]
+	mi := &file_gateway_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -946,7 +990,7 @@ func (x *AgentDecisionSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentDecisionSummary.ProtoReflect.Descriptor instead.
 func (*AgentDecisionSummary) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{14}
+	return file_gateway_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AgentDecisionSummary) GetTenantId() string {
@@ -1010,7 +1054,7 @@ type GetDashboardSnapshotResponse struct {
 
 func (x *GetDashboardSnapshotResponse) Reset() {
 	*x = GetDashboardSnapshotResponse{}
-	mi := &file_gateway_proto_msgTypes[15]
+	mi := &file_gateway_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1022,7 +1066,7 @@ func (x *GetDashboardSnapshotResponse) String() string {
 func (*GetDashboardSnapshotResponse) ProtoMessage() {}
 
 func (x *GetDashboardSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gateway_proto_msgTypes[15]
+	mi := &file_gateway_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1035,7 +1079,7 @@ func (x *GetDashboardSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDashboardSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*GetDashboardSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_gateway_proto_rawDescGZIP(), []int{15}
+	return file_gateway_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GetDashboardSnapshotResponse) GetTenants() []*TenantSnapshot {
@@ -1078,6 +1122,8 @@ const file_gateway_proto_rawDesc = "" +
 	"\x15new_limit_minor_units\x18\x02 \x01(\x03R\x12newLimitMinorUnits\x12\x16\n" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\")\n" +
 	"\x0eGetCardRequest\x12\x17\n" +
+	"\acard_id\x18\x01 \x01(\tR\x06cardId\"+\n" +
+	"\x10CloseCardRequest\x12\x17\n" +
 	"\acard_id\x18\x01 \x01(\tR\x06cardId\"/\n" +
 	"\x10ListCardsRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"B\n" +
@@ -1130,12 +1176,13 @@ const file_gateway_proto_rawDesc = "" +
 	"\x0fcreated_at_unix\x18\a \x01(\x03R\rcreatedAtUnix\"\xaf\x01\n" +
 	"\x1cGetDashboardSnapshotResponse\x12;\n" +
 	"\atenants\x18\x01 \x03(\v2!.ration.gateway.v1.TenantSnapshotR\atenants\x12R\n" +
-	"\x10recent_decisions\x18\x02 \x03(\v2'.ration.gateway.v1.AgentDecisionSummaryR\x0frecentDecisions2\x83\x06\n" +
+	"\x10recent_decisions\x18\x02 \x03(\v2'.ration.gateway.v1.AgentDecisionSummaryR\x0frecentDecisions2\xce\x06\n" +
 	"\aGateway\x12I\n" +
 	"\tIssueCard\x12#.ration.gateway.v1.IssueCardRequest\x1a\x17.ration.gateway.v1.Card\x12U\n" +
 	"\x0fAdjustCardLimit\x12).ration.gateway.v1.AdjustCardLimitRequest\x1a\x17.ration.gateway.v1.Card\x12E\n" +
 	"\aGetCard\x12!.ration.gateway.v1.GetCardRequest\x1a\x17.ration.gateway.v1.Card\x12V\n" +
-	"\tListCards\x12#.ration.gateway.v1.ListCardsRequest\x1a$.ration.gateway.v1.ListCardsResponse\x12t\n" +
+	"\tListCards\x12#.ration.gateway.v1.ListCardsRequest\x1a$.ration.gateway.v1.ListCardsResponse\x12I\n" +
+	"\tCloseCard\x12#.ration.gateway.v1.CloseCardRequest\x1a\x17.ration.gateway.v1.Card\x12t\n" +
 	"\x13RationBridgeFunding\x12-.ration.gateway.v1.RationBridgeFundingRequest\x1a..ration.gateway.v1.RationBridgeFundingResponse\x12h\n" +
 	"\x0fSimulateDeposit\x12).ration.gateway.v1.SimulateDepositRequest\x1a*.ration.gateway.v1.SimulateDepositResponse\x12^\n" +
 	"\x0eStreamActivity\x12(.ration.gateway.v1.StreamActivityRequest\x1a .ration.gateway.v1.ActivityEvent0\x01\x12w\n" +
@@ -1153,51 +1200,54 @@ func file_gateway_proto_rawDescGZIP() []byte {
 	return file_gateway_proto_rawDescData
 }
 
-var file_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_gateway_proto_goTypes = []any{
 	(*Card)(nil),                         // 0: ration.gateway.v1.Card
 	(*IssueCardRequest)(nil),             // 1: ration.gateway.v1.IssueCardRequest
 	(*AdjustCardLimitRequest)(nil),       // 2: ration.gateway.v1.AdjustCardLimitRequest
 	(*GetCardRequest)(nil),               // 3: ration.gateway.v1.GetCardRequest
-	(*ListCardsRequest)(nil),             // 4: ration.gateway.v1.ListCardsRequest
-	(*ListCardsResponse)(nil),            // 5: ration.gateway.v1.ListCardsResponse
-	(*RationBridgeFundingRequest)(nil),   // 6: ration.gateway.v1.RationBridgeFundingRequest
-	(*RationBridgeFundingResponse)(nil),  // 7: ration.gateway.v1.RationBridgeFundingResponse
-	(*SimulateDepositRequest)(nil),       // 8: ration.gateway.v1.SimulateDepositRequest
-	(*SimulateDepositResponse)(nil),      // 9: ration.gateway.v1.SimulateDepositResponse
-	(*StreamActivityRequest)(nil),        // 10: ration.gateway.v1.StreamActivityRequest
-	(*ActivityEvent)(nil),                // 11: ration.gateway.v1.ActivityEvent
-	(*GetDashboardSnapshotRequest)(nil),  // 12: ration.gateway.v1.GetDashboardSnapshotRequest
-	(*TenantSnapshot)(nil),               // 13: ration.gateway.v1.TenantSnapshot
-	(*AgentDecisionSummary)(nil),         // 14: ration.gateway.v1.AgentDecisionSummary
-	(*GetDashboardSnapshotResponse)(nil), // 15: ration.gateway.v1.GetDashboardSnapshotResponse
-	(common.CardStatus)(0),               // 16: ration.common.v1.CardStatus
-	(common.AgentAction)(0),              // 17: ration.common.v1.AgentAction
+	(*CloseCardRequest)(nil),             // 4: ration.gateway.v1.CloseCardRequest
+	(*ListCardsRequest)(nil),             // 5: ration.gateway.v1.ListCardsRequest
+	(*ListCardsResponse)(nil),            // 6: ration.gateway.v1.ListCardsResponse
+	(*RationBridgeFundingRequest)(nil),   // 7: ration.gateway.v1.RationBridgeFundingRequest
+	(*RationBridgeFundingResponse)(nil),  // 8: ration.gateway.v1.RationBridgeFundingResponse
+	(*SimulateDepositRequest)(nil),       // 9: ration.gateway.v1.SimulateDepositRequest
+	(*SimulateDepositResponse)(nil),      // 10: ration.gateway.v1.SimulateDepositResponse
+	(*StreamActivityRequest)(nil),        // 11: ration.gateway.v1.StreamActivityRequest
+	(*ActivityEvent)(nil),                // 12: ration.gateway.v1.ActivityEvent
+	(*GetDashboardSnapshotRequest)(nil),  // 13: ration.gateway.v1.GetDashboardSnapshotRequest
+	(*TenantSnapshot)(nil),               // 14: ration.gateway.v1.TenantSnapshot
+	(*AgentDecisionSummary)(nil),         // 15: ration.gateway.v1.AgentDecisionSummary
+	(*GetDashboardSnapshotResponse)(nil), // 16: ration.gateway.v1.GetDashboardSnapshotResponse
+	(common.CardStatus)(0),               // 17: ration.common.v1.CardStatus
+	(common.AgentAction)(0),              // 18: ration.common.v1.AgentAction
 }
 var file_gateway_proto_depIdxs = []int32{
-	16, // 0: ration.gateway.v1.Card.status:type_name -> ration.common.v1.CardStatus
+	17, // 0: ration.gateway.v1.Card.status:type_name -> ration.common.v1.CardStatus
 	0,  // 1: ration.gateway.v1.ListCardsResponse.cards:type_name -> ration.gateway.v1.Card
-	17, // 2: ration.gateway.v1.AgentDecisionSummary.action:type_name -> ration.common.v1.AgentAction
-	13, // 3: ration.gateway.v1.GetDashboardSnapshotResponse.tenants:type_name -> ration.gateway.v1.TenantSnapshot
-	14, // 4: ration.gateway.v1.GetDashboardSnapshotResponse.recent_decisions:type_name -> ration.gateway.v1.AgentDecisionSummary
+	18, // 2: ration.gateway.v1.AgentDecisionSummary.action:type_name -> ration.common.v1.AgentAction
+	14, // 3: ration.gateway.v1.GetDashboardSnapshotResponse.tenants:type_name -> ration.gateway.v1.TenantSnapshot
+	15, // 4: ration.gateway.v1.GetDashboardSnapshotResponse.recent_decisions:type_name -> ration.gateway.v1.AgentDecisionSummary
 	1,  // 5: ration.gateway.v1.Gateway.IssueCard:input_type -> ration.gateway.v1.IssueCardRequest
 	2,  // 6: ration.gateway.v1.Gateway.AdjustCardLimit:input_type -> ration.gateway.v1.AdjustCardLimitRequest
 	3,  // 7: ration.gateway.v1.Gateway.GetCard:input_type -> ration.gateway.v1.GetCardRequest
-	4,  // 8: ration.gateway.v1.Gateway.ListCards:input_type -> ration.gateway.v1.ListCardsRequest
-	6,  // 9: ration.gateway.v1.Gateway.RationBridgeFunding:input_type -> ration.gateway.v1.RationBridgeFundingRequest
-	8,  // 10: ration.gateway.v1.Gateway.SimulateDeposit:input_type -> ration.gateway.v1.SimulateDepositRequest
-	10, // 11: ration.gateway.v1.Gateway.StreamActivity:input_type -> ration.gateway.v1.StreamActivityRequest
-	12, // 12: ration.gateway.v1.Gateway.GetDashboardSnapshot:input_type -> ration.gateway.v1.GetDashboardSnapshotRequest
-	0,  // 13: ration.gateway.v1.Gateway.IssueCard:output_type -> ration.gateway.v1.Card
-	0,  // 14: ration.gateway.v1.Gateway.AdjustCardLimit:output_type -> ration.gateway.v1.Card
-	0,  // 15: ration.gateway.v1.Gateway.GetCard:output_type -> ration.gateway.v1.Card
-	5,  // 16: ration.gateway.v1.Gateway.ListCards:output_type -> ration.gateway.v1.ListCardsResponse
-	7,  // 17: ration.gateway.v1.Gateway.RationBridgeFunding:output_type -> ration.gateway.v1.RationBridgeFundingResponse
-	9,  // 18: ration.gateway.v1.Gateway.SimulateDeposit:output_type -> ration.gateway.v1.SimulateDepositResponse
-	11, // 19: ration.gateway.v1.Gateway.StreamActivity:output_type -> ration.gateway.v1.ActivityEvent
-	15, // 20: ration.gateway.v1.Gateway.GetDashboardSnapshot:output_type -> ration.gateway.v1.GetDashboardSnapshotResponse
-	13, // [13:21] is the sub-list for method output_type
-	5,  // [5:13] is the sub-list for method input_type
+	5,  // 8: ration.gateway.v1.Gateway.ListCards:input_type -> ration.gateway.v1.ListCardsRequest
+	4,  // 9: ration.gateway.v1.Gateway.CloseCard:input_type -> ration.gateway.v1.CloseCardRequest
+	7,  // 10: ration.gateway.v1.Gateway.RationBridgeFunding:input_type -> ration.gateway.v1.RationBridgeFundingRequest
+	9,  // 11: ration.gateway.v1.Gateway.SimulateDeposit:input_type -> ration.gateway.v1.SimulateDepositRequest
+	11, // 12: ration.gateway.v1.Gateway.StreamActivity:input_type -> ration.gateway.v1.StreamActivityRequest
+	13, // 13: ration.gateway.v1.Gateway.GetDashboardSnapshot:input_type -> ration.gateway.v1.GetDashboardSnapshotRequest
+	0,  // 14: ration.gateway.v1.Gateway.IssueCard:output_type -> ration.gateway.v1.Card
+	0,  // 15: ration.gateway.v1.Gateway.AdjustCardLimit:output_type -> ration.gateway.v1.Card
+	0,  // 16: ration.gateway.v1.Gateway.GetCard:output_type -> ration.gateway.v1.Card
+	6,  // 17: ration.gateway.v1.Gateway.ListCards:output_type -> ration.gateway.v1.ListCardsResponse
+	0,  // 18: ration.gateway.v1.Gateway.CloseCard:output_type -> ration.gateway.v1.Card
+	8,  // 19: ration.gateway.v1.Gateway.RationBridgeFunding:output_type -> ration.gateway.v1.RationBridgeFundingResponse
+	10, // 20: ration.gateway.v1.Gateway.SimulateDeposit:output_type -> ration.gateway.v1.SimulateDepositResponse
+	12, // 21: ration.gateway.v1.Gateway.StreamActivity:output_type -> ration.gateway.v1.ActivityEvent
+	16, // 22: ration.gateway.v1.Gateway.GetDashboardSnapshot:output_type -> ration.gateway.v1.GetDashboardSnapshotResponse
+	14, // [14:23] is the sub-list for method output_type
+	5,  // [5:14] is the sub-list for method input_type
 	5,  // [5:5] is the sub-list for extension type_name
 	5,  // [5:5] is the sub-list for extension extendee
 	0,  // [0:5] is the sub-list for field type_name
@@ -1214,7 +1264,7 @@ func file_gateway_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gateway_proto_rawDesc), len(file_gateway_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

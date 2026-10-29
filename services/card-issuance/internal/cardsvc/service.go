@@ -180,6 +180,9 @@ func (s *Service) AdjustCardLimit(ctx context.Context, req *cardissuancepb.Adjus
 	if !ok {
 		return nil, fmt.Errorf("cardsvc: %s: %w", req.GetCardId(), airwallex.ErrNotFound)
 	}
+	if card.GetStatus() == commonpb.CardStatus_CARD_STATUS_CLOSED {
+		return nil, fmt.Errorf("cardsvc: %s is closed and cannot be adjusted", req.GetCardId())
+	}
 
 	delta := req.GetNewLimitMinorUnits() - card.GetLimitMinorUnits()
 	if delta > 0 {
@@ -229,6 +232,50 @@ func (s *Service) AdjustCardLimit(ctx context.Context, req *cardissuancepb.Adjus
 	if delta < 0 {
 		card.Status = commonpb.CardStatus_CARD_STATUS_RATIONED
 	}
+	updated := cloneCard(card)
+	s.mu.Unlock()
+
+	return updated, nil
+}
+
+// CloseCard permanently closes a card: releases the card's full
+// remaining ledger hold back to the tenant's available balance (the
+// mirror image of IssueCard's HOLD) and marks it closed via Airwallex.
+// Closing an already-closed card is idempotent — it returns the card
+// unchanged rather than erroring or double-releasing a hold that was
+// already freed.
+func (s *Service) CloseCard(ctx context.Context, cardID string) (*cardissuancepb.Card, error) {
+	s.mu.Lock()
+	card, ok := s.cards[cardID]
+	s.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("cardsvc: %s: %w", cardID, airwallex.ErrNotFound)
+	}
+
+	if card.GetStatus() == commonpb.CardStatus_CARD_STATUS_CLOSED {
+		return cloneCard(card), nil
+	}
+
+	if card.GetLimitMinorUnits() > 0 {
+		if _, err := s.ledger.ApplyEntry(ctx, &ledgerpb.ApplyEntryRequest{
+			TenantId:       card.GetTenantId(),
+			Type:           commonpb.LedgerEntryType_LEDGER_ENTRY_TYPE_RELEASE,
+			Amount:         &commonpb.Money{MinorUnits: card.GetLimitMinorUnits(), Currency: card.GetCurrency()},
+			Reference:      cardReferencePrefix + card.GetAirwallexCardId(),
+			IdempotencyKey: s.newID("card-hold-close"),
+			Memo:           "card closed",
+		}); err != nil {
+			return nil, fmt.Errorf("cardsvc: release hold on close for %s: %w", card.GetTenantId(), err)
+		}
+	}
+
+	if _, err := s.airwallex.CloseCard(ctx, card.GetAirwallexCardId()); err != nil {
+		return nil, fmt.Errorf("cardsvc: close via airwallex: %w", err)
+	}
+
+	s.mu.Lock()
+	card.Status = commonpb.CardStatus_CARD_STATUS_CLOSED
+	card.LimitMinorUnits = 0
 	updated := cloneCard(card)
 	s.mu.Unlock()
 

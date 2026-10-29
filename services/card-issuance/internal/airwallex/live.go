@@ -242,6 +242,16 @@ func (l *Live) SetCardControls(ctx context.Context, cardID string, controls Card
 	return out.toCard(), nil
 }
 
+// CloseCard calls POST /api/v1/issuing/cards/{id}/close.
+func (l *Live) CloseCard(ctx context.Context, cardID string) (*Card, error) {
+	var out cardResponse
+	path := "/api/v1/issuing/cards/" + url.PathEscape(cardID) + "/close"
+	if err := l.doJSON(ctx, http.MethodPost, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.toCard(), nil
+}
+
 type transactionResponse struct {
 	ID               string `json:"id"`
 	AmountMinorUnits int64  `json:"amount_minor_units"`

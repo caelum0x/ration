@@ -99,6 +99,21 @@ func (m *Mock) SetCardControls(ctx context.Context, cardID string, controls Card
 	return cloneCard(card), nil
 }
 
+// CloseCard marks the fake card CardStatusClosed and zeroes its limit,
+// mirroring what Live's real POST .../close does to Airwallex's own
+// card resource.
+func (m *Mock) CloseCard(ctx context.Context, cardID string) (*Card, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	card, ok := m.cards[cardID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	card.Status = CardStatusClosed
+	card.LimitMinorUnits = 0
+	return cloneCard(card), nil
+}
+
 // SeedTransaction lets the demo/CLI layer inject a fake incoming global
 // account transaction for a tenant, so ListGlobalAccountTransactions has
 // something deterministic to return without a real Airwallex sandbox.

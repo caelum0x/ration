@@ -75,6 +75,15 @@ func (s *Server) GetCard(ctx context.Context, req *cardissuancepb.GetCardRequest
 	return card, nil
 }
 
+// CloseCard implements cardissuancepb.CardIssuanceServer.
+func (s *Server) CloseCard(ctx context.Context, req *cardissuancepb.CloseCardRequest) (*cardissuancepb.Card, error) {
+	card, err := s.cards.CloseCard(ctx, req.GetCardId())
+	if err != nil {
+		return nil, wrapCardLookupError(err)
+	}
+	return card, nil
+}
+
 // ListCards implements cardissuancepb.CardIssuanceServer.
 func (s *Server) ListCards(ctx context.Context, req *cardissuancepb.ListCardsRequest) (*cardissuancepb.ListCardsResponse, error) {
 	cards, err := s.cards.ListCards(ctx, req.GetTenantId())
