@@ -108,7 +108,7 @@ creates, without editing Go source.`,
 
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "tenant_id:     %s\n", t.GetId())
-			fmt.Fprintf(out, "name:          %s\n", t.GetName())
+			fmt.Fprintf(out, "name:          %s\n", sanitizeControlChars(t.GetName()))
 			fmt.Fprintf(out, "currency:      %s\n", t.GetCurrency())
 			fmt.Fprintf(out, "reserve_floor: %s\n", moneyfmt.Minor(t.GetReserveFloorMinorUnits(), t.GetCurrency()))
 			return nil
