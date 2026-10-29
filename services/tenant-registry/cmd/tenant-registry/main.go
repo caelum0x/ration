@@ -23,6 +23,7 @@ import (
 	"github.com/caelum0x/ration/services/tenant-registry/internal/config"
 	"github.com/caelum0x/ration/services/tenant-registry/internal/grpcserver"
 	"github.com/caelum0x/ration/services/tenant-registry/internal/ledgerclient"
+	"github.com/caelum0x/ration/services/tenant-registry/internal/operatorauth"
 	"github.com/caelum0x/ration/services/tenant-registry/internal/tenant"
 	"google.golang.org/grpc"
 )
@@ -70,19 +71,26 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	log.Info("config loaded", "ledger_core_addr", cfg.LedgerCoreAddr, "auth_addr", cfg.AuthAddr, "mtls_enabled", cfg.MTLS.Enabled)
+	log.Info("config loaded", "ledger_core_addr", cfg.LedgerCoreAddr, "auth_addr", cfg.AuthAddr, "mtls_enabled", cfg.MTLS.Enabled, "require_operator_auth", cfg.RequireOperatorAuth)
 
 	// Mint a single operator-scoped JWT from auth and attach it to
 	// every ledger-core call this process makes directly — see
 	// internal/authclient's doc comment for why: without it, every
 	// CreateTenant/GetTenant/ListTenants call starts failing the
 	// moment RATION_LEDGER_REQUIRE_TENANT_AUTH is enforced.
+	//
+	// authClient is kept open (not closed right after minting, unlike
+	// this same pattern elsewhere in this repo) because it also backs
+	// internal/operatorauth's Verifier below — tenant-registry now
+	// verifies its OWN inbound callers against auth too, not just its
+	// outgoing ledger-core calls. See operatorauth's doc comment for
+	// the real gap this closes.
 	authClient, err := authclient.Dial(cfg.AuthAddr)
 	if err != nil {
 		return err
 	}
+	defer authClient.Close()
 	operatorToken, _, err := authClient.MintOperatorJWT(ctx, "ration-tenant-registry", operatorCredentialTTL)
-	authClient.Close()
 	if err != nil {
 		return err
 	}
@@ -118,7 +126,11 @@ func run(log *slog.Logger) error {
 	grpcServer := grpc.NewServer(
 		mtlsServerOpt,
 		telemetry.ServerOption(),
-		grpc.ChainUnaryInterceptor(telemetry.UnaryServerInterceptor(log), met.UnaryServerInterceptor()),
+		grpc.ChainUnaryInterceptor(
+			telemetry.UnaryServerInterceptor(log),
+			met.UnaryServerInterceptor(),
+			operatorauth.UnaryServerInterceptor(authClient, cfg.RequireOperatorAuth),
+		),
 		grpc.ChainStreamInterceptor(telemetry.StreamServerInterceptor(log), met.StreamServerInterceptor()),
 	)
 	tenantregistrypb.RegisterTenantRegistryServer(grpcServer, srv)

@@ -324,7 +324,23 @@ single source of truth.
    persistence in `BUILD-LOG-2026-10-23.md`'s round 4 notes) — a
    revoked/issued key's state doesn't survive an `auth` restart, which
    is a real production gap, just a different one than this item
-   originally named.
+   originally named. **Found and fixed separately (2026-10-29, round
+   10):** none of the above ever covered `tenant-registry`'s own inbound
+   gRPC surface — `CreateTenant`/`GetTenant`/`ListTenants` are
+   operator-only RPCs (no `tenant_id` to check a caller against), so
+   they were never in scope for gateway's or ledger-core's per-tenant
+   checks, and nothing filled that gap: any caller that could reach
+   `tenant-registry`'s gRPC port (published in `docker-compose.yml`,
+   `0.0.0.0:7011`) could onboard or list every tenant on the platform
+   with zero credentials, because `tenant-registry` mints and attaches
+   its own pre-provisioned operator JWT to every ledger-core call it
+   forwards, regardless of caller identity. Closed by
+   `services/tenant-registry/internal/operatorauth`, gated by
+   `RATION_TENANT_REGISTRY_REQUIRE_OPERATOR_AUTH` (true by default);
+   `ration tenant create`/`ration tenant list`
+   (`services/cli/cmd/ration/tenant.go`) now mint and attach their own
+   operator credential the same way `cli`'s other commands already do
+   for gateway/ledger-core.
 2. **`audit-log` trusts the claimed `source_service` field verbatim —
    fixed for the mTLS-enabled case, unavoidable otherwise.**
    `AppendRequest.source_service` is attacker-controlled data from

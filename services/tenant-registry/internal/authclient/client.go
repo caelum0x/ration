@@ -64,6 +64,32 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
+// VerifyAPIKey checks secret against auth's stored key hashes. The
+// five-value return (rather than a struct) matches
+// internal/operatorauth.Verifier exactly, so *Client satisfies that
+// interface with no adapter needed — same shape as
+// services/gateway/internal/authclient's identical method.
+func (c *Client) VerifyAPIKey(ctx context.Context, secret string) (tenantID string, valid bool, isOperator bool, reason string, err error) {
+	rctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	resp, err := c.stub.VerifyAPIKey(rctx, &authpb.VerifyAPIKeyRequest{Secret: secret})
+	if err != nil {
+		return "", false, false, "", err
+	}
+	return resp.GetTenantId(), resp.GetValid(), resp.GetIsOperator(), resp.GetReason(), nil
+}
+
+// VerifyJWT checks token's signature and expiry against auth.
+func (c *Client) VerifyJWT(ctx context.Context, token string) (tenantID string, valid bool, isOperator bool, reason string, err error) {
+	rctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	resp, err := c.stub.VerifyJWT(rctx, &authpb.VerifyJWTRequest{Token: token})
+	if err != nil {
+		return "", false, false, "", err
+	}
+	return resp.GetTenantId(), resp.GetValid(), resp.GetIsOperator(), resp.GetReason(), nil
+}
+
 // MintOperatorJWT mints a cross-tenant ("operator") JWT for subject —
 // see the package doc comment for why tenant-registry needs operator
 // scope.

@@ -42,11 +42,11 @@ type Client struct {
 // authclient.Dial, the connection is lazy (gRPC only actually dials on
 // first RPC) but addr is still validated as non-empty here so
 // misconfiguration fails at startup, not on the first request.
-// tenant-registry's own gRPC server installs no inbound auth
-// interceptor (see services/tenant-registry/cmd/tenant-registry/main.go
-// — it mints its own operator credential for its outgoing ledger-core
-// calls, but requires none on its inbound surface, same as audit-log),
-// so no credential needs to be attached here.
+// extraOpts is where cmd/ration/tenant.go's dialTenantRegistry attaches
+// the operator-scoped credential tenant-registry's own gRPC server now
+// requires (see services/tenant-registry/internal/operatorauth) — its
+// inbound surface used to accept any caller with no credential at all,
+// which is now closed.
 func Dial(addr string, extraOpts ...grpc.DialOption) (*Client, error) {
 	if addr == "" {
 		return nil, fmt.Errorf("tenantregistryclient: addr must not be empty")

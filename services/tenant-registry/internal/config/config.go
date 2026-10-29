@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/caelum0x/ration/pkg/mtls"
 )
@@ -23,6 +24,18 @@ type Config struct {
 	AuthAddr    string
 	GRPCAddr    string
 	MetricsAddr string
+
+	// RequireOperatorAuth gates internal/operatorauth's inbound check
+	// on CreateTenant/GetTenant/ListTenants — true by default, matching
+	// services/gateway's RATION_GATEWAY_REQUIRE_TENANT_AUTH and
+	// services/ledger-core's RATION_LEDGER_REQUIRE_TENANT_AUTH (both
+	// also true by default). Without this, tenant-registry's own
+	// pre-provisioned operator credential (minted at startup to call
+	// ledger-core) would be usable by ANY caller who can reach its
+	// gRPC port, not just `ration tenant create`/`list` — see
+	// internal/operatorauth's doc comment for how that was verified
+	// live.
+	RequireOperatorAuth bool
 
 	// MTLS configures mutual TLS for tenant-registry's own gRPC server
 	// and for dialing ledger-core (see pkg/mtls, infra/dev-ca/).
@@ -49,6 +62,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	cfg.RequireOperatorAuth, err = getenvBoolDefault("RATION_TENANT_REGISTRY_REQUIRE_OPERATOR_AUTH", true)
+	if err != nil {
+		return nil, err
+	}
+
 	if cfg.LedgerCoreAddr == "" {
 		return nil, fmt.Errorf("config: LEDGER_CORE_ADDR must not be empty")
 	}
@@ -66,4 +84,16 @@ func getenvDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func getenvBoolDefault(key string, def bool) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("config: invalid %s=%q: %w", key, v, err)
+	}
+	return b, nil
 }

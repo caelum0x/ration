@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/caelum0x/ration/services/cli/internal/authclient"
 	"github.com/caelum0x/ration/services/cli/internal/moneyfmt"
 	"github.com/caelum0x/ration/services/cli/internal/tenantregistryclient"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
 )
 
 // newTenantCmd is the real, missing operator path this closes:
@@ -23,6 +25,38 @@ import (
 // internal/demoseed.Tenants() in Go source and rebuilding the binary.
 // `ration tenant create`/`ration tenant list` are tenant-registry's
 // first real callers.
+
+// dialTenantRegistry mints an operator-scoped JWT from auth and
+// attaches it as an "authorization: Bearer <token>" credential on the
+// tenant-registry connection it returns — tenant-registry's own gRPC
+// server now enforces this (internal/operatorauth,
+// RATION_TENANT_REGISTRY_REQUIRE_OPERATOR_AUTH, true by default) since
+// CreateTenant/ListTenants used to be reachable by any caller with
+// network access to its port, with no credential at all. Mirrors
+// clients.go's dialClients, which does the identical mint-then-attach
+// for ledger-core/gateway; kept separate here because tenant.go only
+// ever needs the one connection, not dialClients' full bundle.
+func dialTenantRegistry(ctx context.Context, tenantRegistryAddr, authAddr string) (*tenantregistryclient.Client, error) {
+	auth, err := authclient.Dial(authAddr)
+	if err != nil {
+		return nil, fmt.Errorf("dial auth at %s: %w", authAddr, err)
+	}
+	defer auth.Close()
+	token, _, err := auth.MintOperatorJWT(ctx, "ration-cli", operatorCredentialTTL)
+	if err != nil {
+		return nil, fmt.Errorf("mint operator credential from auth at %s: %w", authAddr, err)
+	}
+
+	client, err := tenantregistryclient.Dial(tenantRegistryAddr,
+		grpc.WithChainUnaryInterceptor(authclient.UnaryClientInterceptor(token)),
+		grpc.WithChainStreamInterceptor(authclient.StreamClientInterceptor(token)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dial tenant-registry at %s: %w", tenantRegistryAddr, err)
+	}
+	return client, nil
+}
+
 func newTenantCmd(flags *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tenant",
@@ -58,7 +92,7 @@ creates, without editing Go source.`,
 				return fmt.Errorf("tenant create: --reserve-floor-minor-units must be >= 0, got %d", reserveFloorMinorUnits)
 			}
 
-			client, err := tenantregistryclient.Dial(flags.tenantRegistryAddr)
+			client, err := dialTenantRegistry(cmd.Context(), flags.tenantRegistryAddr, flags.authAddr)
 			if err != nil {
 				return err
 			}
@@ -93,7 +127,7 @@ func newTenantListCmd(flags *globalFlags) *cobra.Command {
 		Use:   "list",
 		Short: "List every tenant known to ledger-core via tenant-registry.ListTenants",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := tenantregistryclient.Dial(flags.tenantRegistryAddr)
+			client, err := dialTenantRegistry(cmd.Context(), flags.tenantRegistryAddr, flags.authAddr)
 			if err != nil {
 				return err
 			}
