@@ -2,7 +2,9 @@ package cardsvc
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	cardissuancepb "github.com/caelum0x/ration/pkg/pb/cardissuance"
@@ -363,5 +365,108 @@ func TestListCards_FiltersByTenant(t *testing.T) {
 	}
 	if len(cards) != 1 || cards[0].GetTenantId() != "tenant_1" {
 		t.Errorf("ListCards(tenant_1) = %+v, want exactly one tenant_1 card", cards)
+	}
+}
+
+// TestPersist_ConcurrentDifferentCardsDoesNotLoseEitherUpdate reproduces
+// persist()'s lost-update race: AdjustCardLimit on card A and
+// AdjustCardLimit on card B are two DIFFERENT cards, so cardLocks
+// deliberately lets them run concurrently — but persist() rewrites the
+// ENTIRE on-disk file from a full snapshot every time it runs, so
+// whichever call's disk write lands LAST wins, regardless of which
+// call's snapshot was actually more recent. Without persistMu
+// serializing persist()'s snapshot-then-write end to end, card A's
+// persist() call can take its snapshot BEFORE card B's own update
+// lands, then (paused here via beforeSaveForTest) finish writing that
+// stale snapshot to disk AFTER card B's own persist() call has already
+// written the correct, fully up-to-date file — permanently reverting
+// card B's already-"successful" limit change the moment it hits disk,
+// even though ledger-core's real Held balance already reflects it.
+//
+// Confirmed via falsification: temporarily removing persistMu.Lock()/
+// Unlock() from persist() makes this test fail on every run (card B's
+// persisted limit reverts to its pre-adjustment value); restoring them
+// makes it pass reliably.
+func TestPersist_ConcurrentDifferentCardsDoesNotLoseEitherUpdate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cards.json")
+
+	aw := airwallex.NewMock()
+	ledger := &fakeLedger{
+		tenant:   &ledgerpb.Tenant{Id: "tenant_1", Currency: "USD"},
+		allowed:  true,
+		headroom: 1_000_000,
+	}
+	svc := New(aw, ledger)
+	if err := svc.EnablePersistence(path); err != nil {
+		t.Fatalf("EnablePersistence() error = %v", err)
+	}
+
+	cardA, err := svc.IssueCard(context.Background(), &cardissuancepb.IssueCardRequest{
+		TenantId: "tenant_1", CardholderName: "Card A", LimitMinorUnits: 1000, Currency: "USD",
+	})
+	if err != nil {
+		t.Fatalf("IssueCard(A) error = %v", err)
+	}
+	cardB, err := svc.IssueCard(context.Background(), &cardissuancepb.IssueCardRequest{
+		TenantId: "tenant_1", CardholderName: "Card B", LimitMinorUnits: 1000, Currency: "USD",
+	})
+	if err != nil {
+		t.Fatalf("IssueCard(B) error = %v", err)
+	}
+
+	var hookCalls int32
+	release := make(chan struct{})
+	reachedHook := make(chan struct{})
+	svc.beforeSaveForTest = func() {
+		// Only the FIRST call through persist() (card A's own, below)
+		// pauses here — card B's own persist() call must proceed
+		// straight through once it gets its turn, exactly as it would
+		// in production.
+		if atomic.AddInt32(&hookCalls, 1) == 1 {
+			close(reachedHook)
+			<-release
+		}
+	}
+
+	var wgA sync.WaitGroup
+	wgA.Add(1)
+	go func() {
+		defer wgA.Done()
+		if _, err := svc.AdjustCardLimit(context.Background(), &cardissuancepb.AdjustCardLimitRequest{
+			CardId: cardA.GetId(), NewLimitMinorUnits: 2000,
+		}); err != nil {
+			t.Errorf("AdjustCardLimit(A) error = %v", err)
+		}
+	}()
+
+	<-reachedHook // card A's persist() has snapshotted and is now paused.
+
+	var wgB sync.WaitGroup
+	wgB.Add(1)
+	go func() {
+		defer wgB.Done()
+		if _, err := svc.AdjustCardLimit(context.Background(), &cardissuancepb.AdjustCardLimitRequest{
+			CardId: cardB.GetId(), NewLimitMinorUnits: 3000,
+		}); err != nil {
+			t.Errorf("AdjustCardLimit(B) error = %v", err)
+		}
+	}()
+
+	close(release) // let card A's paused persist() finish writing.
+	wgA.Wait()
+	wgB.Wait()
+
+	loaded, err := loadCardsFile(path)
+	if err != nil {
+		t.Fatalf("loadCardsFile() error = %v", err)
+	}
+	if got := loaded[cardA.GetId()].GetLimitMinorUnits(); got != 2000 {
+		t.Errorf("persisted card A limit = %d, want 2000", got)
+	}
+	if got := loaded[cardB.GetId()].GetLimitMinorUnits(); got != 3000 {
+		t.Errorf("persisted card B limit = %d, want 3000 (card B's already-successful "+
+			"adjustment was lost from disk by card A's concurrent, stale persist() write)",
+			got)
 	}
 }

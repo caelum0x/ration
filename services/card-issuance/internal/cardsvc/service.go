@@ -76,6 +76,28 @@ type Service struct {
 	// why a process without it loses every card on restart.
 	persistPath string
 
+	// persistMu serializes persist()'s entire snapshot-then-write
+	// critical section across every card id — unlike cardLocks (which
+	// only serializes same-card mutations), persist() reads the WHOLE
+	// cards map and overwrites the WHOLE file every time it runs, so
+	// two concurrent persist() calls for two DIFFERENT cards (which
+	// cardLocks deliberately lets run in parallel) are a real race
+	// against each other: without this lock, the slower call's disk
+	// write can land after the faster one's and silently clobber the
+	// file with a snapshot that predates the faster call's own update,
+	// permanently losing an already-"successful" mutation from disk.
+	// See persist's doc comment for the reproduced bug.
+	persistMu sync.Mutex
+
+	// beforeSaveForTest, when non-nil, is invoked by persist() after it
+	// has taken its snapshot of s.cards but before it writes that
+	// snapshot to disk — a seam this package's own tests use to force
+	// the exact lost-update interleaving persistMu closes
+	// (TestPersist_ConcurrentDifferentCardsDoesNotLoseEitherUpdate),
+	// since real wall-clock timing alone can't reliably force one
+	// specific goroutine interleaving. Always nil in production.
+	beforeSaveForTest func()
+
 	now   func() time.Time
 	newID func(prefix string) string
 
@@ -145,17 +167,74 @@ func (s *Service) EnablePersistence(path string) error {
 // called, or is a no-op (returns nil, touches no filesystem) otherwise
 // — so the package's own tests and internal/grpcserver's tests, neither
 // of which call EnablePersistence, are unaffected by this change.
+//
+// Every one of IssueCard/AdjustCardLimit/CloseCard calls this after its
+// own per-card-locked critical section, but persist() itself writes the
+// ENTIRE cards map, not just the one card that just changed — so it is
+// NOT safe for two calls on two DIFFERENT card ids to run through this
+// function concurrently, even though cardLocks deliberately lets their
+// surrounding mutations proceed in parallel.
+//
+// Reproduced live (TestPersist_ConcurrentDifferentCardsDoesNotLoseEitherUpdate):
+// before persistMu existed, two goroutines adjusting two different cards
+// (card A, card B) each (1) updated their own card in s.cards under
+// s.mu, then (2) called persist(), which took an unlocked-for-writing
+// snapshot and wrote it straight to disk with no ordering relative to
+// any other in-flight persist() call. If goroutine A's snapshot (taken
+// before B's own update to card B had landed) finished its disk write
+// AFTER goroutine B's snapshot (which already included both updates)
+// had already finished its own write, the file on disk ended up holding
+// A's STALE snapshot — permanently reverting card B's just-committed
+// change the moment it hit disk, even though AdjustCardLimit had
+// already returned a 200 to B's caller and ledger-core's real Held
+// balance already reflected B's new limit. A later process restart
+// would then reload card B's stale, pre-adjustment limit from disk
+// while ledger-core still holds the larger, correct amount against it
+// — exactly the same "real held funds become permanently unreachable by
+// any future AdjustCardLimit/CloseCard" failure mode round 25's lockCard
+// closed for the single-process-in-memory case, reached here instead
+// through a lost disk write surviving a restart.
+//
+// persistMu fixes this by serializing the ENTIRE snapshot-then-write
+// sequence: whichever call acquires it second always takes its own
+// fresh snapshot only after the first call's write has fully landed,
+// and that fresh snapshot is guaranteed to include the second call's
+// own update (already applied to s.cards before persist() was even
+// invoked, in the same calling goroutine) — so the file on disk can
+// never regress behind a mutation that already completed.
 func (s *Service) persist() error {
 	if s.persistPath == "" {
 		return nil
 	}
 
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+
+	// Deep-copy every card (cloneCard, the same proto.Clone helper
+	// AdjustCardLimit/CloseCard already use for their own return
+	// values) rather than copying the map's bare pointers. Without
+	// this, saveCardsFile's protojson.Marshal below — which runs AFTER
+	// s.mu is released, so it is NOT protected by s.mu at all — reads
+	// each Card struct's fields directly off the SAME live objects
+	// AdjustCardLimit/CloseCard mutate in place under s.mu.Lock()
+	// elsewhere. A concurrent mutation of any OTHER card (not just the
+	// one that triggered this persist() call) while this card's own
+	// in-flight snapshot is still being encoded is a real, `-race`
+	// -detected data race: confirmed live by
+	// TestPersist_ConcurrentDifferentCardsDoesNotLoseEitherUpdate, which
+	// originally only targeted the lost-update bug above but also
+	// tripped `go test -race` on roughly 1 run in 20 via exactly this
+	// unsynchronized read-during-marshal, before this clone was added.
 	s.mu.RLock()
 	snapshot := make(map[string]*cardissuancepb.Card, len(s.cards))
 	for id, card := range s.cards {
-		snapshot[id] = card
+		snapshot[id] = cloneCard(card)
 	}
 	s.mu.RUnlock()
+
+	if s.beforeSaveForTest != nil {
+		s.beforeSaveForTest()
+	}
 
 	if err := saveCardsFile(s.persistPath, snapshot); err != nil {
 		return fmt.Errorf("cardsvc: persist card store: %w", err)
