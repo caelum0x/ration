@@ -851,6 +851,30 @@ pub enum ApplyOutcome {
 /// SQLite commit, the next `Ledger::open` replays the event from the
 /// WAL and re-applies it via [`apply_replayed_event`] — so this ordering
 /// is exactly what makes recovery lossless and crash-safe.
+///
+/// That crash-safety guarantee has a sharp edge: once `inner.wal.append`
+/// below returns `Ok`, `event` is fsynced and durable, and
+/// `replay_wal_into_index` is *guaranteed* to replay and apply it the
+/// very next time this WAL is opened — no matter what happens for the
+/// rest of this function. If the SQLite apply/commit that follows then
+/// fails for a reason that does NOT crash the process (a transient
+/// SQLite error, disk pressure on the DB file's own volume — this exact
+/// box has hit real disk exhaustion more than once), returning a plain
+/// `Err` here would tell this call's caller the operation failed while
+/// it is in fact already guaranteed to take effect later. Every
+/// mutating RPC's record id (tenant, deposit, ledger entry, agent
+/// decision) is server-generated, never caller-supplied, so a caller
+/// that reasonably retries after seeing "failure" creates a second,
+/// distinct record — and the first one still resurrects on the next
+/// restart, as a duplicate the caller never asked for. Since there is
+/// no way to make the in-memory index correct here without either a
+/// successful apply or abandoning an already-durable WAL frame (not an
+/// option), the only safe response to an apply failure after a
+/// successful WAL append is to stop this process immediately so it
+/// restarts and `replay_wal_into_index` reconciles the index before any
+/// other call is ever accepted — leaning on the exact recovery path
+/// this module already builds and tests, rather than silently
+/// misreporting an operation that will still happen.
 fn append_and_commit(
     inner: &mut LedgerInner,
     event: &WalEvent,
@@ -873,9 +897,23 @@ fn append_and_commit(
     };
     inner.wal.append(&bytes)?;
 
-    let tx = inner.db.unchecked_transaction()?;
-    apply(&tx)?;
-    tx.commit()?;
+    // From here on `event` is durable — see the doc comment above for
+    // why an apply/commit failure past this point cannot be reported as
+    // an ordinary `Err` without risking a silently duplicated record.
+    let apply_result = inner
+        .db
+        .unchecked_transaction()
+        .and_then(|tx| apply(&tx).and_then(|_| tx.commit()));
+
+    if let Err(e) = apply_result {
+        eprintln!(
+            "FATAL: ledger-core: WAL event already durable but SQLite apply \
+             failed ({e}); aborting process now so the next start replays it \
+             correctly instead of reporting a false failure for an operation \
+             that will still take effect"
+        );
+        std::process::abort();
+    }
     Ok(())
 }
 
