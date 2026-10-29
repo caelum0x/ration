@@ -17,8 +17,10 @@ Platforms track).
 No web dashboard. This is a systems project: a Rust ledger core backed by a
 hand-rolled C write-ahead log, a Go gateway that owns the Airwallex
 integration, a Go agent loop that makes the actual rationing decisions
-(policy rules + an LLM for judgment calls), and a terminal UI for judges to
-watch it work live.
+(policy rules + an LLM for judgment calls), dedicated Go services for
+tenant-scoped auth, tenant onboarding, card issuance/lifecycle, and
+signed-webhook ingestion, an independent append-only audit mirror, and a
+terminal UI for judges to watch it work live.
 
 **Engineering standard:** this is built to the bar of production fintech
 infrastructure, not hackathon scaffolding — real crash-safety (see the WAL
@@ -34,24 +36,38 @@ production use, not a weekend demo.
                     ┌─────────────────────┐
                     │   tui / cli (Go)     │  terminal dashboard + demo driver
                     └──────────┬───────────┘
-                               │ gRPC
+                               │ gRPC (operator/API-key credential attached)
                     ┌──────────▼───────────┐       ┌────────────────────┐
   Airwallex API <──►│   gateway (Go)        │──────►│  agent (Go)         │
-  (mock or live)    │  issuing/global accts │ gRPC  │  policy + LLM loop  │
-                    │  webhooks, multi-tenant│◄──────│  tool-calling        │
+  (mock or live)    │  tenant-auth BFF,     │ gRPC  │  policy + LLM loop  │
+                    │  fronts every service  │◄──────│  tool-calling        │
                     └──────────┬───────────┘       └────────────────────┘
                                │ gRPC
-                    ┌──────────▼───────────┐
-                    │  ledger-core (Rust)   │  authoritative balances,
-                    │  double-entry, reserve │  deposits, reserve floor
-                    │  floor enforcement     │
-                    └──────────┬───────────┘
-                               │ FFI
-                    ┌──────────▼───────────┐
-                    │  wal (C)              │  crash-safe append log +
-                    │  write-ahead log       │  recovery, fsync-correct
-                    └───────────────────────┘
+         ┌─────────────┬───────┼───────┬──────────────┬──────────────┐
+         ▼             ▼       ▼       ▼              ▼              ▼
+   ┌──────────┐ ┌─────────────┐ ┌───────────┐ ┌──────────────────┐ ┌───────────┐
+   │   auth    │ │  tenant-    │ │   card-   │ │     webhook-      │ │ audit-log │
+   │  API keys/│ │  registry   │ │  issuance │ │     ingestion     │ │ append-   │
+   │  operator │ │  tenant CRUD│ │  issue/   │ │  signed Airwallex │ │ only      │
+   │  JWTs     │ │             │ │  close/   │ │  deposit webhooks │ │ mirror    │
+   │           │ │             │ │  adjust   │ │                   │ │           │
+   └──────────┘ └─────────────┘ └─────┬─────┘ └─────────┬─────────┘ └───────────┘
+                                       │ gRPC            │ gRPC
+                               ┌───────▼────────────────▼───────┐
+                               │       ledger-core (Rust)         │  authoritative
+                               │  double-entry, reserve-floor      │  balances,
+                               │  enforcement, deposit tracking    │  deposits
+                               └──────────────────┬────────────────┘
+                                                   │ FFI
+                                        ┌──────────▼───────────┐
+                                        │  wal (C)              │  crash-safe
+                                        │  write-ahead log       │  append log +
+                                        └───────────────────────┘  recovery
 ```
+
+`audit-log` is written to directly by `ledger-core` (a best-effort,
+never-blocking mirror of every ledger entry and agent decision — see
+`services/ledger-core/src/audit_mirror.rs`), not routed through gateway.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design,
 [docs/AGENT-DESIGN.md](docs/AGENT-DESIGN.md) for the agent/policy design,
@@ -63,11 +79,17 @@ status.
 | Service | Language | Role |
 |---|---|---|
 | `services/wal` | C | Crash-safe write-ahead log: append, fsync, recover. |
-| `services/ledger-core` | Rust | Double-entry ledger, reserve-floor enforcement, deposit tracking. gRPC server over the C WAL. |
-| `services/gateway` | Go | Airwallex Issuing/Global Accounts/webhooks client (mock + live), multi-tenant routing, fronts ledger-core. |
+| `services/ledger-core` | Rust | Double-entry ledger, reserve-floor enforcement, deposit tracking, AES-256-GCM encryption at rest. gRPC server over the C WAL. |
+| `services/auth` | Go | Mints/verifies operator JWTs and per-tenant API keys; `apikey issue/revoke/list` lifecycle. |
+| `services/tenant-registry` | Go | Tenant onboarding/CRUD (`tenant create/list`), operator-credential-gated. |
+| `services/card-issuance` | Go | Card issue/get/list/adjust-limit/close against Airwallex (mock or live), file-persisted card metadata, reserve-floor-safe limit changes. |
+| `services/webhook-ingestion` | Go | Verifies signed Airwallex deposit webhooks (HMAC + timestamp/clock-skew check), forwards to ledger-core. |
+| `services/audit-log` | Go | Independent, append-only mirror of every money-moving decision — best-effort, never blocks the original operation. |
+| `services/gateway` | Go | Tenant-auth BFF: fronts every service above, re-validates reserve-floor/bridge rules independently of the agent. |
 | `services/agent` | Go | Agentic loop: watches late deposits, decides card issuance / bridge rationing, calls an LLM for non-deterministic judgment calls, executes via gateway. |
-| `services/tui` | Go (Bubble Tea) | Terminal dashboard: tenants, deposits, cards, live agent activity feed. |
-| `services/cli` | Go | Operator CLI: seed demo tenants, simulate deposits, force late-deposit scenarios for judging. |
+| `services/tui` | Go (Bubble Tea) | Terminal dashboard: tenants, deposits, cards (with in-TUI issue/adjust-limit forms), live agent activity feed. |
+| `services/cli` | Go | Operator CLI: seed demo tenants, simulate deposits, manage tenants/API keys/cards, force late-deposit scenarios for judging. |
+| `sdk/go/ration`, `sdk/rust/ration-client` | Go, Rust | Official client SDKs for external platform customers, with API-key/bearer-token auth. |
 | `proto/` | Protobuf | Wire contracts shared by every service. |
 
 ## Quickstart
@@ -75,7 +97,9 @@ status.
 ```bash
 make proto          # generate Go stubs from proto/
 make build           # build all services
-make run-demo         # starts wal-backed ledger-core, gateway (mock Airwallex), agent, seeds 3 tenants
+make run-demo         # starts wal-backed ledger-core, auth, tenant-registry,
+                     # card-issuance (mock Airwallex), webhook-ingestion,
+                     # gateway, and agent, then seeds 3 tenants
 ./bin/tui              # watch it live in a second terminal
 ```
 

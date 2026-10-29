@@ -12,6 +12,19 @@ set -a
 source .env
 set +a
 
+# .env deliberately leaves AUDIT_LOG_ADDR empty (it's meant to be derived
+# from AUDIT_LOG_GRPC_ADDR, same convention CARD_ISSUANCE_ADDR/
+# WEBHOOK_INGESTION_ADDR already use) and run-demo.sh already applies this
+# exact fallback (`AUDIT_LOG_ADDR="${AUDIT_LOG_ADDR:-$AUDIT_LOG_GRPC_ADDR}"`)
+# before launching ledger-core. This script's plain `source .env` never did,
+# so ledger-core here always saw AUDIT_LOG_ADDR="" (explicitly set, not
+# merely unset) and silently disabled its own AuditMirror on every run
+# started this way — the headline "audit trail is the point" claim
+# (README, docs/SUBMISSION.md) was never actually exercised by this path.
+# Reproduced live: `ration audit-check` showed every tenant's real ledger
+# entries against 0 audit entries before this fix.
+export AUDIT_LOG_ADDR="${AUDIT_LOG_ADDR:-$AUDIT_LOG_GRPC_ADDR}"
+
 LOG_DIR="$ROOT/data/logs"
 mkdir -p "$LOG_DIR"
 PID_FILE="$ROOT/.ration-demo.pid"
