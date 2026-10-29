@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	commonpb "github.com/caelum0x/ration/pkg/pb/common"
@@ -93,6 +94,15 @@ type Service struct {
 	now   func() time.Time
 	newID func(prefix string) string
 
+	// tenantLocks holds one *sync.Mutex per tenant id, lazily created,
+	// never removed. It serializes RationBridgeFunding's full
+	// check-then-act critical section (velocityBlocked's read of recent
+	// HOLD/RELEASE entries → the granted-amount decision → ApplyEntry's
+	// HOLD → RecordAgentDecision) for one specific tenant, while leaving
+	// every other tenant free to proceed concurrently. See the doc
+	// comment on RationBridgeFunding below for the race this closes.
+	tenantLocks sync.Map // tenantID string -> *sync.Mutex
+
 	// Metrics is optional (nil-safe): main.go sets it after construction
 	// so RationBridgeFunding records ration_bridge_grants_total and
 	// ration_reserve_floor_headroom_minor_units (docs/SCALE-EXPANSION.md
@@ -158,10 +168,34 @@ type policySnapshot struct {
 }
 
 // RationBridgeFunding computes and (if non-zero) applies a bridge grant
-// for tenantID. It is safe to call concurrently for different tenants;
-// correctness for a single tenant under concurrent calls ultimately rests
-// on ledger-core's idempotent, reserve-floor-checked ApplyEntry (defense
-// in depth per docs/AGENT-DESIGN.md), not on any lock in this package.
+// for tenantID. It is safe to call concurrently for different tenants.
+//
+// For a single tenant, ledger-core's idempotent, reserve-floor-checked
+// ApplyEntry is defense in depth for the reserve-floor invariant (rule
+// 1) only — it has no notion of "velocity cap" or "bridge cap of this
+// specific late deposit" (rules 2/3), which exist purely in this
+// method's own Go logic as a read of recent ledger entries
+// (velocityBlocked) followed, much later, by a write (the HOLD
+// ApplyEntry below). Without serializing that read-then-write per
+// tenant, two concurrent calls for the SAME tenant both read
+// velocityBlocked=false before either HOLD lands, so both get granted.
+//
+// Reproduced live against the real running stack: seeded a tenant with
+// a single $10,000.00 late deposit (60% bridge cap = $6,000.00,
+// reserve-floor headroom far above that), then fired two concurrent
+// RationBridgeFunding calls for $6,000.00 each sharing one gRPC
+// connection — both returned granted=$6,000.00/fully_granted=true, and
+// the tenant's real ledger-core Held balance rose by the full
+// $12,000.00 (confirmed via a matching $12,000.00 drop in Available) —
+// 120% of the single late deposit this was meant to cap at 60%, and two
+// simultaneous outstanding grants where rule 3 allows at most one.
+//
+// lockTenant below closes this the same way card-issuance's own
+// per-card lockCard already closes the analogous
+// AdjustCardLimit/CloseCard race: serializing this method's entire
+// check-then-act critical section per tenant id, so the second
+// concurrent call always sees the first's already-committed HOLD before
+// computing its own velocity/cap decision.
 func (s *Service) RationBridgeFunding(ctx context.Context, tenantID string, requestedMinorUnits int64, reason string) (*Result, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("bridge: tenant_id is required")
@@ -169,6 +203,9 @@ func (s *Service) RationBridgeFunding(ctx context.Context, tenantID string, requ
 	if requestedMinorUnits <= 0 {
 		return nil, fmt.Errorf("bridge: requested_minor_units must be > 0, got %d", requestedMinorUnits)
 	}
+
+	unlock := s.lockTenant(tenantID)
+	defer unlock()
 
 	tenant, err := s.ledger.GetTenant(ctx, tenantID)
 	if err != nil {
@@ -295,6 +332,18 @@ func (s *Service) RationBridgeFunding(ctx context.Context, tenantID string, requ
 		FullyGranted:      fullyGranted,
 		Explanation:       explanation,
 	}, nil
+}
+
+// lockTenant returns an unlock function that must be called (typically
+// via defer) to release the per-tenant mutex for tenantID, blocking
+// until any other in-flight RationBridgeFunding call for the SAME
+// tenant id has fully finished. See RationBridgeFunding's doc comment
+// for the race this closes.
+func (s *Service) lockTenant(tenantID string) (unlock func()) {
+	muIface, _ := s.tenantLocks.LoadOrStore(tenantID, &sync.Mutex{})
+	tenantMu := muIface.(*sync.Mutex)
+	tenantMu.Lock()
+	return tenantMu.Unlock
 }
 
 // recordHeadroom sets ration_reserve_floor_headroom_minor_units{tenant_id}

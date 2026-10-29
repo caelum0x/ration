@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -392,5 +394,148 @@ func TestRationBridgeFunding_InvalidInput(t *testing.T) {
 	}
 	if _, err := svc.RationBridgeFunding(context.Background(), "tenant", -500, "x"); err == nil {
 		t.Error("expected error for negative requested_minor_units")
+	}
+}
+
+// concurrencyFakeLedger is a second, mutex-protected LedgerClient fake
+// (separate from fakeLedger above, which is only ever driven
+// sequentially by the other tests in this file) used solely by
+// TestRationBridgeFunding_ConcurrentCallsRespectVelocityCap below. Its
+// ApplyEntry feeds applied HOLD/RELEASE entries back into the list
+// ListEntries returns and decrements the live balance — unlike
+// fakeLedger's static entries field — so that a second, truly
+// concurrent RationBridgeFunding call for the same tenant sees
+// whatever the first call has already committed, the same way a real
+// ledger-core read would. Without that live feedback loop this test
+// could not distinguish "the lock closed the race" from "there was
+// nothing for a second call to race against."
+type concurrencyFakeLedger struct {
+	mu       sync.Mutex
+	tenant   *ledgerpb.Tenant
+	balance  *ledgerpb.Balance
+	deposits []*ledgerpb.Deposit
+	entries  []*ledgerpb.LedgerEntry
+
+	recordedDecisions []*ledgerpb.RecordAgentDecisionRequest
+	nextEntryID       int
+}
+
+func (f *concurrencyFakeLedger) GetTenant(ctx context.Context, tenantID string) (*ledgerpb.Tenant, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tenant, nil
+}
+
+func (f *concurrencyFakeLedger) GetBalance(ctx context.Context, tenantID string) (*ledgerpb.Balance, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return &ledgerpb.Balance{
+		TenantId:            f.balance.GetTenantId(),
+		AvailableMinorUnits: f.balance.GetAvailableMinorUnits(),
+		HeldMinorUnits:      f.balance.GetHeldMinorUnits(),
+	}, nil
+}
+
+func (f *concurrencyFakeLedger) ListDeposits(ctx context.Context, tenantID string) ([]*ledgerpb.Deposit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.deposits, nil
+}
+
+func (f *concurrencyFakeLedger) ListEntries(ctx context.Context, tenantID string) ([]*ledgerpb.LedgerEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*ledgerpb.LedgerEntry, len(f.entries))
+	copy(out, f.entries)
+	return out, nil
+}
+
+func (f *concurrencyFakeLedger) ApplyEntry(ctx context.Context, req *ledgerpb.ApplyEntryRequest) (*ledgerpb.ApplyEntryResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextEntryID++
+	balanceAfter := f.balance.GetAvailableMinorUnits() - req.GetAmount().GetMinorUnits()
+	f.balance.AvailableMinorUnits = balanceAfter
+	entry := &ledgerpb.LedgerEntry{
+		Id:                     fmt.Sprintf("entry_%d", f.nextEntryID),
+		TenantId:               req.GetTenantId(),
+		Type:                   req.GetType(),
+		Amount:                 req.GetAmount(),
+		BalanceAfterMinorUnits: balanceAfter,
+		Reference:              req.GetReference(),
+		Memo:                   req.GetMemo(),
+		CreatedAtUnix:          2_000_000_000,
+	}
+	f.entries = append(f.entries, entry)
+	return &ledgerpb.ApplyEntryResponse{
+		Entry:        entry,
+		BalanceAfter: &ledgerpb.Balance{TenantId: req.GetTenantId(), AvailableMinorUnits: balanceAfter},
+	}, nil
+}
+
+func (f *concurrencyFakeLedger) RecordAgentDecision(ctx context.Context, req *ledgerpb.RecordAgentDecisionRequest) (*ledgerpb.AgentDecision, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recordedDecisions = append(f.recordedDecisions, req)
+	return &ledgerpb.AgentDecision{Id: "decision_test", TenantId: req.GetTenantId()}, nil
+}
+
+// TestRationBridgeFunding_ConcurrentCallsRespectVelocityCap: two real
+// concurrent RationBridgeFunding calls for the SAME tenant, racing
+// against the SAME single late deposit. Reproduced live against the
+// real running stack before this fix (see RationBridgeFunding's doc
+// comment): both calls read velocityBlocked=false before either HOLD
+// landed, so both were granted — $12,000.00 total held against a
+// $10,000.00 late deposit capped at 60%, and two simultaneous
+// outstanding grants where rule 3 allows at most one. With lockTenant
+// serializing the full check-then-act critical section per tenant,
+// exactly one of the two calls here must see the other's committed HOLD
+// and decline on the velocity cap — run with `go test -race` to also
+// catch any data race in the critical section itself, not just the
+// logical double-grant.
+func TestRationBridgeFunding_ConcurrentCallsRespectVelocityCap(t *testing.T) {
+	tenantID := "tenant_bridge_race"
+	f := &concurrencyFakeLedger{
+		tenant:  &ledgerpb.Tenant{Id: tenantID, Currency: "USD", ReserveFloorMinorUnits: 1_000_000},
+		balance: &ledgerpb.Balance{TenantId: tenantID, AvailableMinorUnits: 10_000_000},
+		deposits: []*ledgerpb.Deposit{
+			lateDeposit(tenantID, 1_000_000, 1_999_000_000),
+		},
+	}
+	svc := New(f, DefaultPolicy())
+	svc.now = func() time.Time { return time.Unix(2_000_000_000, 0) }
+	svc.newID = func(prefix string) string { return prefix + "_fixed" }
+
+	const concurrentCalls = 2
+	requested := int64(600_000) // = the full 60% bridge cap of the $10,000.00 late deposit
+	results := make([]*Result, concurrentCalls)
+	errs := make([]error, concurrentCalls)
+	var wg sync.WaitGroup
+	for i := 0; i < concurrentCalls; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx], errs[idx] = svc.RationBridgeFunding(context.Background(), tenantID, requested, "race")
+		}(i)
+	}
+	wg.Wait()
+
+	var totalGranted int64
+	var grantedCount int
+	for i := 0; i < concurrentCalls; i++ {
+		if errs[i] != nil {
+			t.Fatalf("call %d: RationBridgeFunding() error = %v", i, errs[i])
+		}
+		totalGranted += results[i].GrantedMinorUnits
+		if results[i].GrantedMinorUnits > 0 {
+			grantedCount++
+		}
+	}
+
+	if totalGranted != requested {
+		t.Errorf("totalGranted = %d, want %d (exactly one call should be granted the full bridge cap; the velocity cap must block the other)", totalGranted, requested)
+	}
+	if grantedCount != 1 {
+		t.Errorf("grantedCount = %d, want 1 (exactly one of the two concurrent calls should succeed)", grantedCount)
 	}
 }
