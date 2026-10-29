@@ -208,6 +208,21 @@ module "ledger_core" {
   min_capacity  = 1
   max_capacity  = 1 # see note above: single-writer, not horizontally scaled
 
+  # "Recreate" deployment semantics, not rolling: stop the old task
+  # fully before starting the new one. The module's own default
+  # (100/200) lets ECS run the old AND new task concurrently for the
+  # health-check window of every deploy — harmless for a stateless
+  # service, but for this single-writer, local-WAL-only service it
+  # means two processes with completely disjoint on-disk state (the
+  # new task's ephemeral storage starts empty, nothing replicates the
+  # old task's WAL to it) both answer tenant-scoped RPCs under the
+  # same Cloud Map name until the old one is torn down — and any write
+  # ECS happens to route to the old task in that window is lost the
+  # moment it's stopped. A brief deploy-time gap is the correct
+  # tradeoff here, not split-brain on real money state.
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
+
   environment_variables = {
     RATION_LEDGER_WAL_PATH = "/data/ledger.wal"
     RATION_LEDGER_DB_PATH  = "/data/ledger.db"
@@ -368,6 +383,14 @@ module "audit_log" {
   desired_count = 1
   min_capacity  = 1
   max_capacity  = 1 # single-writer hash chain — see note above
+
+  # Same "recreate, not rolling" reasoning as module.ledger_core above:
+  # audit-log is also single-writer, local-disk-only, with no
+  # replication between tasks, so the old+new overlap the module's
+  # default (100/200) would otherwise allow is a real split-brain risk
+  # here too.
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
 
   environment_variables = {
     AUDIT_LOG_GRPC_ADDR       = "0.0.0.0:7003"

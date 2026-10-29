@@ -153,6 +153,13 @@ module "ledger_core" {
   min_capacity  = 1
   max_capacity  = 1 # single-writer — see envs/dev/main.tf's note; this is the one place prod does NOT want more replicas
 
+  # "Recreate" deployment semantics — see envs/dev/main.tf's
+  # module.ledger_core comment for the full reasoning (default 100/200
+  # lets old+new tasks run concurrently with disjoint on-disk state).
+  # Most important to get right in prod of all three environments.
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
+
   environment_variables = {
     RATION_LEDGER_WAL_PATH = "/data/ledger.wal"
     RATION_LEDGER_DB_PATH  = "/data/ledger.db"
@@ -286,6 +293,11 @@ module "audit_log" {
   desired_count = 1
   min_capacity  = 1
   max_capacity  = 1 # single-writer hash chain — see envs/dev/main.tf's note; this is the one place prod does NOT want more replicas
+
+  # "Recreate" deployment semantics — see envs/dev/main.tf's
+  # module.audit_log comment for the full reasoning.
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
 
   environment_variables = {
     AUDIT_LOG_GRPC_ADDR       = "0.0.0.0:7003"

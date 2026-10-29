@@ -103,6 +103,38 @@ variable "max_capacity" {
   default     = 4
 }
 
+# Separate from min/max_capacity above: those two govern the
+# AUTOSCALER's steady-state task count, but ECS's own ROLLING DEPLOYMENT
+# (every `terraform apply`/image-tag change, independent of autoscaling)
+# is governed entirely by these two deployment_* percentages, and the
+# previous hardcoded 100/200 let ECS run TWO tasks at once (old + new)
+# for the length of every deployment's health-check window — fine for a
+# stateless service, but a real correctness bug for a single-writer,
+# local-disk-only service like ledger-core or audit-log: the new task
+# starts on fresh, empty Fargate ephemeral storage with zero replication
+# from the old task's disk, so for that whole overlap window the two
+# tasks answer the identical tenant-scoped RPC with completely divergent
+# state while both sit behind the same Cloud Map DNS name, and any write
+# ECS routes to the old task is permanently lost the moment that task is
+# torn down. Defaults preserve today's standard zero-downtime rolling
+# behavior for stateless services; ledger-core/audit-log's own env
+# files override these to 0/100 ("recreate" semantics — stop the old
+# task fully before starting the new one) to make overlap impossible,
+# at the cost of a short deploy-time gap, which is the correct tradeoff
+# for a service whose own code comments already call it "single-writer,
+# not horizontally scaled."
+variable "deployment_minimum_healthy_percent" {
+  description = "ECS deployment_minimum_healthy_percent. See the comment on max_capacity above for why this is separate from autoscaling."
+  type        = number
+  default     = 100
+}
+
+variable "deployment_maximum_percent" {
+  description = "ECS deployment_maximum_percent. See the comment on max_capacity above for why this is separate from autoscaling."
+  type        = number
+  default     = 200
+}
+
 variable "cpu_target_value" {
   description = "Target average CPU utilization (%) the autoscaler tracks."
   type        = number
