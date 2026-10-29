@@ -37,6 +37,7 @@ import (
 	"net/http"
 
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
+	"github.com/caelum0x/ration/services/gateway/internal/ratelimit"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -79,6 +80,14 @@ type Handler struct {
 	// per-caller authorization internal/tenantauth's StreamActivity
 	// enforcement exists to provide.
 	dashboardOperatorToken string
+
+	// publicLimiter is a per-real-client-IP token bucket guarding the
+	// handful of routes whose underlying RPC carries neither tenant_id
+	// nor card_id (GetDashboardSnapshot, and StreamActivity when called
+	// with an empty tenant_id) — see publiclimit.go's doc comment for
+	// why internal/ratelimit's own per-tenant gRPC interceptor can't
+	// protect those specific routes on this REST facade.
+	publicLimiter *ratelimit.Limiter
 }
 
 // NewHandler constructs a Handler that translates every request into a
@@ -87,7 +96,11 @@ func NewHandler(client GatewayClient, log *slog.Logger) *Handler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Handler{client: client, log: log}
+	return &Handler{
+		client:        client,
+		log:           log,
+		publicLimiter: ratelimit.New(defaultPublicRateLimitRPS, defaultPublicRateLimitBurst),
+	}
 }
 
 // SetDashboardOperatorToken configures the operator-scoped credential

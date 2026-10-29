@@ -107,6 +107,10 @@ func newAgentDecisionSummaryJSON(d *gatewaypb.AgentDecisionSummary) agentDecisio
 // facade's JSON translation of gateway.proto's GetDashboardSnapshot
 // RPC, polled by dashboard.html every few seconds.
 func (h *Handler) handleDashboardSnapshot(w http.ResponseWriter, r *http.Request) {
+	if !h.allowPublicRoute(w, r) {
+		return
+	}
+
 	resp, err := h.client.GetDashboardSnapshot(clientContext(r), &gatewaypb.GetDashboardSnapshotRequest{})
 	if err != nil {
 		writeGRPCError(w, h.log, err)
@@ -139,6 +143,10 @@ func (h *Handler) handleDashboardSnapshot(w http.ResponseWriter, r *http.Request
 // client-side parsing code, which is exactly what dashboard.html's own
 // JS does.
 func (h *Handler) handleDashboardActivityStream(w http.ResponseWriter, r *http.Request) {
+	if !h.allowPublicRoute(w, r) {
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeBadRequest(w, h.log, "streaming not supported by this response writer")

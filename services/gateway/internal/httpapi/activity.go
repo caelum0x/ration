@@ -45,6 +45,18 @@ func (h *Handler) handleStreamActivity(w http.ResponseWriter, r *http.Request) {
 
 	tenantID := r.URL.Query().Get("tenant_id")
 
+	// An empty tenant_id is the documented "all tenants" mode (this
+	// handler's own doc comment) — the one case where
+	// internal/ratelimit's gRPC-layer interceptor has no tenant_id/
+	// card_id to key on and falls back to "peer:<addr>", which is
+	// always the same collapsed loopback self-dial peer for every REST
+	// caller (see publiclimit.go). A non-empty tenant_id is already
+	// correctly per-tenant-scoped at the gRPC layer, so this check is
+	// skipped there to avoid double-limiting a legitimate caller.
+	if tenantID == "" && !h.allowPublicRoute(w, r) {
+		return
+	}
+
 	stream, err := h.client.StreamActivity(clientContext(r), &gatewaypb.StreamActivityRequest{TenantId: tenantID})
 	if err != nil {
 		writeGRPCError(w, h.log, err)
