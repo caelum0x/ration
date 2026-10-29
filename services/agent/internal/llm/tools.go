@@ -303,12 +303,41 @@ func (tc ToolContext) handleAdjustCardLimit(ctx context.Context, raw json.RawMes
 		return fmt.Sprintf("invalid input: %v", err), true
 	}
 
+	snapshot := map[string]any{"input": in}
+
+	// Agent-side pre-check, same defense-in-depth rationale as
+	// handleRationBridgeFunding's MaxGrantMinorUnits check and
+	// BuildToolSchemas's own doc comment ("tenant_id is deliberately
+	// not a parameter on any of these ... so the model can never
+	// redirect an action at another tenant"): card_id is the one
+	// free-text parameter among these four tools NOT pinned to
+	// tc.TenantID by construction, and gateway's own tenantauth
+	// interceptor explicitly skips the card_id->tenant ownership check
+	// for an operator credential (services/gateway/internal/tenantauth/
+	// interceptor.go's isOperator bypass) — which is exactly what this
+	// agent always authenticates as (internal/authclient.
+	// MintOperatorJWT). Without this check, a hallucinated or
+	// prompt-injected card_id (e.g. via the tenant-controlled
+	// TenantName field already rendered verbatim into the user message
+	// by BuildUserMessage) could adjust ANY tenant's card limit, not
+	// just the tenant this decision cycle is actually for.
+	owner, err := tc.Gateway.GetCard(ctx, &gateway.GetCardRequest{CardId: in.CardID})
+	if err != nil {
+		reason := fmt.Sprintf("adjust_card_limit: could not resolve card %q: %v", in.CardID, err)
+		tc.record(ctx, common.AgentAction_AGENT_ACTION_DECLINE, reason, snapshot)
+		return reason, true
+	}
+	if owner.GetTenantId() != tc.TenantID {
+		reason := fmt.Sprintf("adjust_card_limit: card %q does not belong to tenant %q; refusing cross-tenant action", in.CardID, tc.TenantID)
+		tc.record(ctx, common.AgentAction_AGENT_ACTION_DECLINE, reason, snapshot)
+		return reason, true
+	}
+
 	card, err := tc.Gateway.AdjustCardLimit(ctx, &gateway.AdjustCardLimitRequest{
 		CardId:             in.CardID,
 		NewLimitMinorUnits: in.NewLimitMinorUnits,
 		Reason:             in.Reason,
 	})
-	snapshot := map[string]any{"input": in}
 	if err != nil {
 		reason := fmt.Sprintf("gateway AdjustCardLimit failed: %v", err)
 		tc.record(ctx, common.AgentAction_AGENT_ACTION_DECLINE, reason, snapshot)
