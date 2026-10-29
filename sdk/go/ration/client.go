@@ -168,6 +168,16 @@ func (c *Client) AdjustCardLimit(ctx context.Context, cardID string, newLimitMin
 	})
 }
 
+// CloseCard permanently closes a card: releases its full remaining
+// ledger hold back to the tenant's available balance and marks it
+// CARD_STATUS_CLOSED. Closing an already-closed card is idempotent —
+// it returns the card unchanged, not an error. Use this to shut off a
+// leaked or offboarded credential; AdjustCardLimit rejects a closed
+// card outright rather than reopening a hold on it.
+func (c *Client) CloseCard(ctx context.Context, cardID string) (*Card, error) {
+	return c.gw.CloseCard(ctx, &gatewaypb.CloseCardRequest{CardId: cardID})
+}
+
 // GetCard fetches a single card by id.
 func (c *Client) GetCard(ctx context.Context, cardID string) (*Card, error) {
 	return c.gw.GetCard(ctx, &gatewaypb.GetCardRequest{CardId: cardID})

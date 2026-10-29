@@ -4,9 +4,18 @@
 //! unchanged by the section-1 service split, so this crate is stable
 //! against both the pre-split monolith and the current thin-BFF gateway.
 //!
+//! Gateway's own `internal/tenantauth` interceptor defaults
+//! `RATION_GATEWAY_REQUIRE_TENANT_AUTH` to `true` (see
+//! `services/gateway/internal/config`), so every RPC below is rejected
+//! with `codes::Unauthenticated` against a default-config deployment
+//! unless a credential is attached — mint one with
+//! `ration apikey issue --tenant <id>` and connect with
+//! [`Client::connect_with_api_key`]:
+//!
 //! ```no_run
 //! # async fn example() -> Result<(), ration_client::ClientError> {
-//! let mut client = ration_client::Client::connect("http://localhost:7002").await?;
+//! let mut client =
+//!     ration_client::Client::connect_with_api_key("http://localhost:7002", "rk_...").await?;
 //! let card = client
 //!     .issue_card("tenant_1", "Jane Doe", 1_000_00, "monthly", "USD")
 //!     .await?;
@@ -40,11 +49,47 @@ pub use pb::ration::common::v1 as common;
 pub use pb::ration::gateway::v1::{ActivityEvent, Card};
 
 use pb::ration::gateway::v1::{
-    gateway_client::GatewayClient, AdjustCardLimitRequest, GetCardRequest, IssueCardRequest,
-    ListCardsRequest, RationBridgeFundingRequest, SimulateDepositRequest, StreamActivityRequest,
+    gateway_client::GatewayClient, AdjustCardLimitRequest, CloseCardRequest, GetCardRequest,
+    IssueCardRequest, ListCardsRequest, RationBridgeFundingRequest, SimulateDepositRequest,
+    StreamActivityRequest,
 };
+use tonic::metadata::MetadataValue;
+use tonic::service::interceptor::InterceptedService;
+use tonic::service::Interceptor;
 use tonic::transport::{Channel, Endpoint};
-use tonic::Streaming;
+use tonic::{Request, Status, Streaming};
+
+/// `x-api-key`/`authorization` must match
+/// `services/gateway/internal/tenantauth`'s identically-named header
+/// constants exactly — that package is the server side of this
+/// exchange and is a separate Go module, so there is no shared import
+/// to keep these in sync (same reasoning as `sdk/go/ration`'s own
+/// repeated `apiKeyHeader`/`authorizationHeader` constants).
+const API_KEY_HEADER: &str = "x-api-key";
+const AUTHORIZATION_HEADER: &str = "authorization";
+const BEARER_PREFIX: &str = "Bearer ";
+
+/// Attaches a single credential header (if any) to every unary and
+/// streaming RPC a [`Client`] makes — the Rust counterpart to
+/// `sdk/go/ration`'s `WithAPIKey`/`WithBearerToken` dial options.
+/// `None` makes this a no-op pass-through so [`Client::from_channel`]
+/// keeps working unauthenticated for callers who attach their own
+/// credential via a custom interceptor on the channel.
+#[derive(Debug, Clone, Default)]
+struct CredentialInterceptor {
+    header: Option<(&'static str, String)>,
+}
+
+impl Interceptor for CredentialInterceptor {
+    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
+        if let Some((key, value)) = &self.header {
+            let metadata_value = MetadataValue::try_from(value.as_str())
+                .map_err(|_| Status::invalid_argument("credential value is not valid metadata"))?;
+            request.metadata_mut().insert(*key, metadata_value);
+        }
+        Ok(request)
+    }
+}
 
 /// `RequestBridgeFunding`'s typed result — the grant may be partial or
 /// zero, so check `fully_granted`/`explanation`, not just the `Result`.
@@ -58,27 +103,94 @@ pub struct BridgeFundingResult {
 /// A connected client for `gateway.proto`'s `Gateway` service.
 #[derive(Debug, Clone)]
 pub struct Client {
-    inner: GatewayClient<Channel>,
+    inner: GatewayClient<InterceptedService<Channel, CredentialInterceptor>>,
 }
 
 impl Client {
     /// Connects to a Ration gateway at `addr` (e.g.
     /// `"http://localhost:7002"`, gateway's `GATEWAY_GRPC_ADDR` default
-    /// over plaintext HTTP/2). For mTLS against a production deployment
-    /// (see `pkg/mtls`, `infra/dev-ca/`), build your own
-    /// `tonic::transport::Channel` with `ClientTlsConfig` and construct via
-    /// [`Client::from_channel`] instead.
+    /// over plaintext HTTP/2) with no credential attached — only usable
+    /// against a deployment with `RATION_GATEWAY_REQUIRE_TENANT_AUTH`
+    /// explicitly disabled. Use [`Client::connect_with_api_key`] or
+    /// [`Client::connect_with_bearer_token`] against a default-config
+    /// gateway. For mTLS against a production deployment (see
+    /// `pkg/mtls`, `infra/dev-ca/`), build your own
+    /// `tonic::transport::Channel` with `ClientTlsConfig` and construct
+    /// via [`Client::from_channel`] instead.
     pub async fn connect(addr: impl Into<String>) -> Result<Self, ClientError> {
-        let endpoint = Endpoint::from_shared(addr.into())?;
-        let channel = endpoint.connect().await?;
+        let channel = Self::dial(addr).await?;
         Ok(Self::from_channel(channel))
     }
 
-    /// Wraps an already-established channel — for mTLS, custom
-    /// interceptors, or tests dialing an in-process server.
+    /// Connects to a Ration gateway at `addr` and attaches `secret` (a
+    /// `services/auth` `IssueAPIKey` plaintext response, e.g. minted via
+    /// `ration apikey issue`) as `x-api-key` metadata on every unary and
+    /// streaming RPC this client makes — see the module-level docs for
+    /// why a credential is required at all against a default-config
+    /// gateway.
+    pub async fn connect_with_api_key(
+        addr: impl Into<String>,
+        secret: impl Into<String>,
+    ) -> Result<Self, ClientError> {
+        let channel = Self::dial(addr).await?;
+        Ok(Self::from_channel_with_api_key(channel, secret))
+    }
+
+    /// Connects to a Ration gateway at `addr` and attaches `token` (a
+    /// `services/auth` `MintJWT` response) as `authorization: Bearer
+    /// <token>` metadata on every unary and streaming RPC this client
+    /// makes — a short-lived alternative to
+    /// [`Client::connect_with_api_key`]'s long-lived API key.
+    pub async fn connect_with_bearer_token(
+        addr: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Result<Self, ClientError> {
+        let channel = Self::dial(addr).await?;
+        Ok(Self::from_channel_with_bearer_token(channel, token))
+    }
+
+    async fn dial(addr: impl Into<String>) -> Result<Channel, ClientError> {
+        let endpoint = Endpoint::from_shared(addr.into())?;
+        endpoint.connect().await.map_err(ClientError::from)
+    }
+
+    /// Wraps an already-established channel with no credential attached
+    /// — for mTLS, a custom interceptor already attached to the channel,
+    /// or tests dialing an in-process server.
     pub fn from_channel(channel: Channel) -> Self {
         Self {
-            inner: GatewayClient::new(channel),
+            inner: GatewayClient::with_interceptor(channel, CredentialInterceptor::default()),
+        }
+    }
+
+    /// Wraps an already-established channel and attaches `secret` as
+    /// `x-api-key` metadata on every RPC — see
+    /// [`Client::connect_with_api_key`].
+    pub fn from_channel_with_api_key(channel: Channel, secret: impl Into<String>) -> Self {
+        Self {
+            inner: GatewayClient::with_interceptor(
+                channel,
+                CredentialInterceptor {
+                    header: Some((API_KEY_HEADER, secret.into())),
+                },
+            ),
+        }
+    }
+
+    /// Wraps an already-established channel and attaches `token` as
+    /// `authorization: Bearer <token>` metadata on every RPC — see
+    /// [`Client::connect_with_bearer_token`].
+    pub fn from_channel_with_bearer_token(channel: Channel, token: impl Into<String>) -> Self {
+        Self {
+            inner: GatewayClient::with_interceptor(
+                channel,
+                CredentialInterceptor {
+                    header: Some((
+                        AUTHORIZATION_HEADER,
+                        format!("{BEARER_PREFIX}{}", token.into()),
+                    )),
+                },
+            ),
         }
     }
 
@@ -115,6 +227,19 @@ impl Client {
             reason: reason.into(),
         };
         Ok(self.inner.adjust_card_limit(req).await?.into_inner())
+    }
+
+    /// Permanently closes a card: releases its full remaining ledger
+    /// hold back to the tenant's available balance and marks it
+    /// `CARD_STATUS_CLOSED`. Closing an already-closed card is
+    /// idempotent — it returns the card unchanged, not an error.
+    /// `adjust_card_limit` rejects a closed card outright rather than
+    /// reopening a hold on it.
+    pub async fn close_card(&mut self, card_id: impl Into<String>) -> Result<Card, ClientError> {
+        let req = CloseCardRequest {
+            card_id: card_id.into(),
+        };
+        Ok(self.inner.close_card(req).await?.into_inner())
     }
 
     /// Fetches a single card by id.
