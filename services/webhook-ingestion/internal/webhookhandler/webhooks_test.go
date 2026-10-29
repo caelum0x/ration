@@ -10,12 +10,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	commonpb "github.com/caelum0x/ration/pkg/pb/common"
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
 	"github.com/caelum0x/ration/services/webhook-ingestion/internal/eventbus"
+	"google.golang.org/protobuf/proto"
 )
 
 // freshTimestamp is a valid "x-timestamp" value as of the moment it's
@@ -215,5 +218,177 @@ func TestHandleAirwallexWebhook_UnhandledEventTypeReturnsOK(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+// raceLedger is a concurrency-aware fakeLedger, unlike the plain
+// fakeLedger above (which always returns the same static slice
+// regardless of what MarkDepositReceived has already done — fine for
+// every other test in this file, all of which drive the handler
+// sequentially). This feeds MarkDepositReceived's own writes back into
+// what ListDeposits returns — the same live-feedback-loop fake
+// services/card-issuance/internal/bridge's own concurrency regression
+// test already established for the analogous TOCTOU race on
+// RationBridgeFunding's velocity cap.
+//
+// The very first ListDeposits call sleeps briefly before returning,
+// simulating the real network/DB latency a genuine ledger-core RPC
+// would have — widening the TOCTOU window so a second, unserialized
+// concurrent call reliably lands inside it instead of only
+// occasionally under real goroutine scheduling. This is deliberately
+// NOT a hard two-party rendezvous (unlike a channel-based barrier that
+// waits for N arrivals before releasing any of them): with the fix's
+// per-tenant lock in place, the second call never reaches ListDeposits
+// until the first has fully finished (lock → list → match → mark →
+// unlock), so a rendezvous that waited for both to *arrive* at
+// ListDeposits before releasing either would deadlock forever against
+// a correctly-serializing fix. A one-sided sleep has no such deadlock:
+// it reproduces the race when nothing serializes the critical section,
+// and is simply a harmless, already-resolved-by-the-lock wait when
+// something does.
+type raceLedger struct {
+	mu       sync.Mutex
+	deposits map[string]*ledgerpb.Deposit
+	arrived  int32
+}
+
+func newRaceLedger(deposits []*ledgerpb.Deposit) *raceLedger {
+	m := make(map[string]*ledgerpb.Deposit, len(deposits))
+	for _, d := range deposits {
+		m[d.GetId()] = cloneDeposit(d)
+	}
+	return &raceLedger{deposits: m}
+}
+
+func (r *raceLedger) ListDeposits(ctx context.Context, tenantID string) ([]*ledgerpb.Deposit, error) {
+	r.mu.Lock()
+	out := make([]*ledgerpb.Deposit, 0, len(r.deposits))
+	for _, d := range r.deposits {
+		out = append(out, cloneDeposit(d))
+	}
+	r.mu.Unlock()
+
+	// The first call to reach here sleeps *after* taking its snapshot
+	// (not before), simulating the network/DB latency between "read the
+	// deposits" and "act on what was read" a real ledger-core RPC round
+	// trip would have. Without a lock serializing the caller's whole
+	// critical section, a second concurrent call can run its own
+	// ListDeposits (and the match/mark that follows it) to completion
+	// during this sleep, then this call still hands its caller the
+	// stale, already-superseded snapshot it captured before sleeping —
+	// reproducing the real race. With the fix's per-tenant lock, no
+	// second call ever reaches this method until this one (and its own
+	// match/mark) has fully finished, so this sleep is simply an inert
+	// wait.
+	if atomic.AddInt32(&r.arrived, 1) == 1 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	return out, nil
+}
+
+func (r *raceLedger) MarkDepositReceived(ctx context.Context, req *ledgerpb.MarkDepositReceivedRequest) (*ledgerpb.Deposit, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.deposits[req.GetDepositId()]
+	if !ok {
+		return nil, fmt.Errorf("raceLedger: unknown deposit %s", req.GetDepositId())
+	}
+	if d.GetReceivedAtUnix() == 0 {
+		d.ReceivedAtUnix = req.GetReceivedAtUnix()
+		d.ExternalRef = req.GetExternalRef()
+	}
+	return cloneDeposit(d), nil
+}
+
+// cloneDeposit returns a deep copy of d via proto.Clone — generated
+// proto message structs embed a protoimpl.MessageState (which contains
+// a sync.Mutex), so a plain `cp := *d` shallow copy would copy that
+// lock value; proto.Clone is the safe way to hand callers their own
+// copy while raceLedger keeps the original under its own mutex. Same
+// pattern services/card-issuance/internal/cardsvc's cloneCard already
+// established.
+func cloneDeposit(d *ledgerpb.Deposit) *ledgerpb.Deposit {
+	return proto.Clone(d).(*ledgerpb.Deposit)
+}
+
+func (r *raceLedger) receivedCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, d := range r.deposits {
+		if d.GetReceivedAtUnix() != 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// TestHandleAirwallexWebhook_ConcurrentSameAmountDepositsBothSettle
+// reproduces a real fund-stranding gap, the same missing-lock class
+// round 25's card-issuance fixes (lockCard/lockTenant) already closed
+// for AdjustCardLimit/CloseCard and RationBridgeFunding: two genuinely
+// concurrent webhook deliveries for the SAME tenant — plausible any
+// time a tenant has two outstanding deposits of the same amount
+// settling close together, since Go's net/http serves each request on
+// its own goroutine — both call ListDeposits before either has called
+// MarkDepositReceived, so both independently compute "the oldest
+// not-yet-received deposit of this amount" and land on the SAME
+// deposit (dep_1, the older one). ledger-core's own MarkDepositReceived
+// is idempotent per deposit_id, so this never double-credits — but the
+// second transaction's real, already-arrived money is then never
+// matched to anything: dep_2 stays Expected forever, understating the
+// tenant's available balance by its full amount, with nothing in this
+// repo that ever revisits an Expected deposit once the webhook that
+// should have settled it has already been consumed (and acknowledged
+// 200 OK) by the wrong deposit.
+func TestHandleAirwallexWebhook_ConcurrentSameAmountDepositsBothSettle(t *testing.T) {
+	secret := "whsec_test"
+	dep1 := &ledgerpb.Deposit{Id: "dep_1", TenantId: "tenant_1", ExpectedAmount: &commonpb.Money{MinorUnits: 50000, Currency: "USD"}, ExpectedAtUnix: 1000}
+	dep2 := &ledgerpb.Deposit{Id: "dep_2", TenantId: "tenant_1", ExpectedAmount: &commonpb.Money{MinorUnits: 50000, Currency: "USD"}, ExpectedAtUnix: 2000}
+	ledger := newRaceLedger([]*ledgerpb.Deposit{dep1, dep2})
+	h := NewHandler(secret, ledger, nil, nil)
+
+	makeReq := func(txID string, occurredAt int64) *http.Request {
+		payload, _ := json.Marshal(map[string]any{
+			"id":   "evt_" + txID,
+			"name": "global_account.transaction.created",
+			"data": map[string]any{
+				"tenant_id":          "tenant_1",
+				"transaction_id":     txID,
+				"amount_minor_units": 50000,
+				"currency":           "USD",
+				"occurred_at_unix":   occurredAt,
+			},
+		})
+		timestamp := freshTimestamp()
+		sig := sign(secret, payload, timestamp)
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/airwallex", bytes.NewReader(payload))
+		req.Header.Set("x-timestamp", timestamp)
+		req.Header.Set("x-signature", sig)
+		return req
+	}
+
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	txIDs := []string{"tx_1", "tx_2"}
+	wg.Add(2)
+	for i, txID := range txIDs {
+		go func(i int, txID string) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			h.Mux().ServeHTTP(rec, makeReq(txID, 1500+int64(i)))
+			codes[i] = rec.Code
+		}(i, txID)
+	}
+	wg.Wait()
+
+	for i, code := range codes {
+		if code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200", i, code)
+		}
+	}
+
+	if got := ledger.receivedCount(); got != 2 {
+		t.Fatalf("receivedCount = %d, want 2 — both real transactions should each settle their own distinct deposit, not collide on the same oldest match", got)
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
@@ -40,6 +41,30 @@ type Handler struct {
 	ledger        LedgerClient
 	bus           *eventbus.Bus
 	log           *slog.Logger
+
+	// tenantLocks holds one *sync.Mutex per tenant_id, lazily created,
+	// never removed (same never-shrinks lifetime as
+	// cardsvc.Service.cardLocks/bridge.Service.tenantLocks, the
+	// identical pattern this mirrors). It serializes
+	// handleTransactionCreated's entire check-then-act critical section
+	// (ListDeposits -> match -> MarkDepositReceived) for one specific
+	// tenant_id, while leaving every other tenant's webhook deliveries
+	// free to process concurrently. See handleTransactionCreated's doc
+	// comment for the race this closes: without it, two genuinely
+	// concurrent webhook deliveries for the SAME tenant (e.g. two
+	// same-amount deposits settling within the same HTTP-handling
+	// window — Go's net/http serves each request on its own goroutine)
+	// can both call ListDeposits before either has called
+	// MarkDepositReceived, so both independently compute "oldest
+	// not-yet-received deposit of this amount" and land on the SAME
+	// deposit. ledger-core's own MarkDepositReceived is idempotent per
+	// deposit_id (the second call just returns the already-Received
+	// record without crediting twice), so this never double-credits —
+	// but the second transaction's real, already-arrived money is then
+	// never matched to anything at all: its own deposit stays Expected
+	// forever, understating the tenant's available balance by exactly
+	// that amount with no code path in this repo that ever revisits it.
+	tenantLocks sync.Map // tenantID string -> *sync.Mutex
 }
 
 // NewHandler constructs a webhook Handler. webhookSecret is the
@@ -50,6 +75,22 @@ func NewHandler(webhookSecret string, ledger LedgerClient, bus *eventbus.Bus, lo
 		log = slog.Default()
 	}
 	return &Handler{webhookSecret: webhookSecret, ledger: ledger, bus: bus, log: log}
+}
+
+// lockTenant returns an unlock function that must be called (typically
+// via defer) to release the per-tenant mutex for tenantID, blocking
+// until any other in-flight handleTransactionCreated call for the SAME
+// tenant_id has fully finished (including its own ListDeposits read and
+// MarkDepositReceived write). See tenantLocks' doc comment for the race
+// this closes — the identical per-entity-id serialization pattern
+// services/card-issuance/internal/cardsvc.Service.lockCard and
+// services/card-issuance/internal/bridge.Service.lockTenant already
+// established for card-issuance's own money-moving RPCs.
+func (h *Handler) lockTenant(tenantID string) (unlock func()) {
+	muIface, _ := h.tenantLocks.LoadOrStore(tenantID, &sync.Mutex{})
+	tenantMu := muIface.(*sync.Mutex)
+	tenantMu.Lock()
+	return tenantMu.Unlock
 }
 
 // Mux returns an http.Handler with the webhook route registered, ready
@@ -152,6 +193,12 @@ func (h *Handler) handleTransactionCreated(ctx context.Context, env *airwallex.W
 	if payload.TenantID == "" {
 		return fmt.Errorf("global_account.transaction.created payload missing tenant_id")
 	}
+
+	// Serializes this entire check-then-act critical section
+	// (ListDeposits -> match -> MarkDepositReceived) per tenant_id —
+	// see tenantLocks' doc comment on Handler for the race this closes.
+	unlock := h.lockTenant(payload.TenantID)
+	defer unlock()
 
 	deposits, err := h.ledger.ListDeposits(ctx, payload.TenantID)
 	if err != nil {
