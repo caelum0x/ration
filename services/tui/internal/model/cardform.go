@@ -9,6 +9,7 @@ import (
 
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
 	ledgerpb "github.com/caelum0x/ration/pkg/pb/ledger"
+	"github.com/caelum0x/ration/pkg/textsanitize"
 	"github.com/caelum0x/ration/services/tui/internal/client"
 )
 
@@ -103,9 +104,15 @@ func newIssueCardForm(tenants []*ledgerpb.Tenant, selectedIdx int) *cardForm {
 // reason.
 func newAdjustLimitForm(card *gatewaypb.Card, tenantName string) *cardForm {
 	return &cardForm{
-		kind:     cardFormAdjustLimit,
-		cardID:   card.GetId(),
-		infoLine: fmt.Sprintf("%s — %s — current limit %s", tenantName, card.GetCardholderName(), card.GetLimitInterval()),
+		kind:   cardFormAdjustLimit,
+		cardID: card.GetId(),
+		// card.GetCardholderName() is operator-authored free text (set via
+		// "ration card issue --cardholder" or this same form's own issue
+		// path) — stripped of control characters before going into infoLine
+		// so a malicious/careless cardholder name can't inject terminal
+		// escape sequences into the adjust-limit modal's rendering (same
+		// class of gap closed for the Cards tab's own table in view/cards.go).
+		infoLine: fmt.Sprintf("%s — %s — current limit %s", tenantName, textsanitize.StripControlChars(card.GetCardholderName()), card.GetLimitInterval()),
 		fields: []*formField{
 			{label: "New limit (minor units)", kind: fieldNumeric, value: []rune(strconv.FormatInt(card.GetLimitMinorUnits(), 10))},
 			{label: "Reason", kind: fieldText, value: []rune("ration tui adjust-limit")},

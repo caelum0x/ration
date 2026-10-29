@@ -155,7 +155,7 @@ func printCards(out io.Writer, cards []*gatewaypb.Card) {
 	fmt.Fprintln(w, "  CARDHOLDER\tSTATUS\tLIMIT\tINTERVAL\tCARD ID")
 	for _, card := range cards {
 		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n",
-			card.CardholderName,
+			sanitizeControlChars(card.CardholderName),
 			card.Status.String(),
 			moneyfmt.Minor(card.LimitMinorUnits, card.Currency),
 			card.LimitInterval,
