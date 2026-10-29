@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/caelum0x/ration/pkg/textsanitize"
 	"github.com/caelum0x/ration/services/tui/internal/format"
 )
 
@@ -32,11 +33,26 @@ func Activity(rows []ActivityRow, cursor, height int) string {
 	var b strings.Builder
 	for i := start; i < end; i++ {
 		r := rows[i]
+		// Summary is built server-side (services/gateway/internal/
+		// grpcserver/server.go's publish calls) by interpolating
+		// free-text, operator/LLM-influenceable fields verbatim — e.g.
+		// IssueCard's CardholderName and AdjustCardLimit's Reason —
+		// into the activity feed's Summary string with no
+		// sanitization anywhere upstream, unlike every other surface
+		// that renders CardholderName (round 13/16's own
+		// textsanitize/sanitizeControlChars sweep never reached this
+		// RPC's own Summary field, a separate code path). Strip here,
+		// at the render boundary, the same place every other
+		// terminal-facing field in this package already does it
+		// (format.SanitizedCell's own doc comment), so no ANSI/VT100
+		// escape sequence embedded in a cardholder name or an
+		// adjust-limit reason can survive into this tab.
+		summary := textsanitize.StripControlChars(r.Summary)
 		line := fmt.Sprintf("%s  %-8s  %-16s  %s",
 			format.Unix(r.AtUnix),
 			strings.ToUpper(r.Kind),
 			format.Truncate(r.TenantName, 16),
-			r.Summary,
+			summary,
 		)
 		kindLabel := strings.ToUpper(r.Kind)
 		styled := activityKindStyle(r.Kind).Render(kindLabel)
@@ -44,7 +60,7 @@ func Activity(rows []ActivityRow, cursor, height int) string {
 
 		if i == cursor {
 			line = SelectedRowStyle.Render(format.Truncate(
-				fmt.Sprintf("%s  %-8s  %-16s  %s", format.Unix(r.AtUnix), kindLabel, format.Truncate(r.TenantName, 16), r.Summary),
+				fmt.Sprintf("%s  %-8s  %-16s  %s", format.Unix(r.AtUnix), kindLabel, format.Truncate(r.TenantName, 16), summary),
 				200,
 			))
 		}
