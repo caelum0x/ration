@@ -30,7 +30,15 @@ func Tenants(tenants []*ledgerpb.Tenant, balances map[string]*ledgerpb.Balance, 
 			status = "BREACH"
 		}
 		rows = append(rows, []string{
-			t.GetName(),
+			// t.GetName() is operator-supplied free text with no
+			// server-side charset validation (services/tenant-registry/
+			// internal/tenant.Service.Create only checks non-emptiness) —
+			// same unsanitized-free-text-into-terminal class rounds
+			// 13/16/23 already closed for CardholderName/the CLI's own
+			// tenant-create echo/the Activity feed's Summary, but never
+			// for a Tenant's own Name as rendered by this tab. Sanitize
+			// via the same helper decisions.go/cards.go already use.
+			format.SanitizedCell(t.GetName(), tenantWidths[0]),
 			t.GetCurrency(),
 			format.Money(t.GetReserveFloorMinorUnits(), t.GetCurrency()),
 			format.Money(available, t.GetCurrency()),

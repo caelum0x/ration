@@ -48,10 +48,18 @@ func Activity(rows []ActivityRow, cursor, height int) string {
 		// escape sequence embedded in a cardholder name or an
 		// adjust-limit reason can survive into this tab.
 		summary := textsanitize.StripControlChars(r.Summary)
+		// r.TenantName is resolveTenantName's lookup of the Tenant's own
+		// operator-supplied Name (round-trips raw if the tenant_id isn't
+		// yet known locally) — the same unsanitized-free-text-into-
+		// terminal class as Summary just above, on a sibling field this
+		// line renders raw via format.Truncate alone (which only cuts
+		// length, never strips control bytes, per that function's own
+		// doc comment). Strip it the same way.
+		tenantName := textsanitize.StripControlChars(r.TenantName)
 		line := fmt.Sprintf("%s  %-8s  %-16s  %s",
 			format.Unix(r.AtUnix),
 			strings.ToUpper(r.Kind),
-			format.Truncate(r.TenantName, 16),
+			format.Truncate(tenantName, 16),
 			summary,
 		)
 		kindLabel := strings.ToUpper(r.Kind)

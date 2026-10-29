@@ -126,7 +126,19 @@ func fetchDecisions(ctx context.Context, c *clients, timeout time.Duration, tena
 
 func printTenantHeader(out io.Writer, tenant *ledgerpb.Tenant) {
 	w := newTabWriter(out)
-	fmt.Fprintf(w, "Tenant\t%s\n", tenant.Name)
+	// tenant.Name is operator-supplied free text validated server-side
+	// only for non-emptiness (services/tenant-registry/internal/tenant.
+	// Service.Create checks name == ""; no charset check) — round 16's
+	// own live test proved a raw ESC byte survives all the way into a
+	// persisted Tenant record via "ration tenant create --name". Round
+	// 16 sanitized that create command's own echoed confirmation and
+	// "tenant list", but `ration status`, the single most commonly run
+	// command in this repo per round 13's own framing, read the same
+	// Tenant back through a separate call site (fetchTenant -> this
+	// function) that never got the same fix. Sanitize here too, same
+	// helper every other free-text field this command prints already
+	// uses.
+	fmt.Fprintf(w, "Tenant\t%s\n", sanitizeControlChars(tenant.Name))
 	fmt.Fprintf(w, "ID\t%s\n", tenant.Id)
 	fmt.Fprintf(w, "Currency\t%s\n", tenant.Currency)
 	fmt.Fprintf(w, "Reserve floor\t%s\n", moneyfmt.Minor(tenant.ReserveFloorMinorUnits, tenant.Currency))

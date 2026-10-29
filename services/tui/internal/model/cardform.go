@@ -79,7 +79,13 @@ func newIssueCardForm(tenants []*ledgerpb.Tenant, selectedIdx int) *cardForm {
 	names := make([]string, len(tenants))
 	ids := make([]string, len(tenants))
 	for i, t := range tenants {
-		names[i] = fmt.Sprintf("%s (%s)", t.GetName(), t.GetCurrency())
+		// t.GetName() is operator-supplied free text with no server-side
+		// charset validation — the same unsanitized-field class rounds
+		// 13/16/23 already closed for CardholderName/the CLI tenant-
+		// create echo/the Activity Summary, but never for a tenant's own
+		// Name as it flows into this picker's rendered option list
+		// (view/cardform.go's picker renderer doesn't sanitize either).
+		names[i] = fmt.Sprintf("%s (%s)", textsanitize.StripControlChars(t.GetName()), t.GetCurrency())
 		ids[i] = t.GetId()
 	}
 	if selectedIdx < 0 || selectedIdx >= len(tenants) {
@@ -112,7 +118,11 @@ func newAdjustLimitForm(card *gatewaypb.Card, tenantName string) *cardForm {
 		// so a malicious/careless cardholder name can't inject terminal
 		// escape sequences into the adjust-limit modal's rendering (same
 		// class of gap closed for the Cards tab's own table in view/cards.go).
-		infoLine: fmt.Sprintf("%s — %s — current limit %s", tenantName, textsanitize.StripControlChars(card.GetCardholderName()), card.GetLimitInterval()),
+		// tenantName (resolveTenantName's lookup of the Tenant's own Name,
+		// also operator-supplied free text with no server-side charset
+		// check) was passed straight through here unsanitized — stripped
+		// too, same helper, same reasoning.
+		infoLine: fmt.Sprintf("%s — %s — current limit %s", textsanitize.StripControlChars(tenantName), textsanitize.StripControlChars(card.GetCardholderName()), card.GetLimitInterval()),
 		fields: []*formField{
 			{label: "New limit (minor units)", kind: fieldNumeric, value: []rune(strconv.FormatInt(card.GetLimitMinorUnits(), 10))},
 			{label: "Reason", kind: fieldText, value: []rune("ration tui adjust-limit")},
