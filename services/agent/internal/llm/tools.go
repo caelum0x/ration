@@ -228,7 +228,35 @@ func (tc ToolContext) handleRationBridgeFunding(ctx context.Context, raw json.Ra
 	snapshot["granted_minor_units"] = resp.GetGrantedMinorUnits()
 	snapshot["fully_granted"] = resp.GetFullyGranted()
 	rationale := fmt.Sprintf("granted %d of %d requested: %s", resp.GetGrantedMinorUnits(), in.AmountMinorUnits, resp.GetExplanation())
-	tc.record(ctx, common.AgentAction_AGENT_ACTION_RATION_BRIDGE, rationale, snapshot)
+
+	// The gateway can return a perfectly valid, nil-error decline —
+	// GrantedMinorUnits: 0, FullyGranted: false — on any of
+	// bridge.Service.RationBridgeFunding's three zero-grant paths: below
+	// the $5 minimum-useful-grant floor (including its own, independent,
+	// ledger-entry-based velocity check disagreeing with this agent's
+	// decision-history-based hasOpenGrantWithinWindow — they consult two
+	// different sources of truth and can genuinely diverge), a
+	// ledger-core-rechecked reserve-floor violation, or "deposit already
+	// received" (round 27). Tagging every nil-error response as
+	// RATION_BRIDGE regardless of amount corrupted the audit trail (a
+	// decision that moved zero money, labeled as if it granted one) and
+	// — far more seriously — fed hasOpenGrantWithinWindow's
+	// wasActuallyGranted check a false "actually executed" signal purely
+	// because this snapshot map always carries a granted_minor_units key
+	// (even at 0, since it's always set above): that function then fails
+	// closed on an unresolvable-looking grant and permanently
+	// velocity-caps a tenant who was never actually granted anything —
+	// the same fund-stranding-via-misclassification failure mode round
+	// 6 fixed via a missing deposit_id, reached here instead via a wrong
+	// action tag. Reproduced and fixed live via
+	// services/agent/internal/loop/runner_test.go's
+	// TestRunner_Tick_GatewayDeclineWithNoErrorRecordedAsDecline and
+	// TestRunner_Tick_GatewayDeclineWithNoErrorDoesNotBlockLaterGrant.
+	action := common.AgentAction_AGENT_ACTION_RATION_BRIDGE
+	if resp.GetGrantedMinorUnits() <= 0 {
+		action = common.AgentAction_AGENT_ACTION_DECLINE
+	}
+	tc.record(ctx, action, rationale, snapshot)
 
 	out, _ := json.Marshal(map[string]any{
 		"granted_minor_units": resp.GetGrantedMinorUnits(),
