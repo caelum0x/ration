@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
@@ -27,8 +28,12 @@ func (h *Handler) handleSimulateDeposit(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var body simulateDepositRequestJSON
-	if err := decodeJSONBody(r, &body); err != nil {
-		writeBadRequest(w, h.log, err.Error())
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			writeRequestEntityTooLarge(w, h.log, err.Error())
+		} else {
+			writeBadRequest(w, h.log, err.Error())
+		}
 		return
 	}
 	if body.AmountMinorUnits <= 0 {

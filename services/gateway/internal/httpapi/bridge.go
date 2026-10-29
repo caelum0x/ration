@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
@@ -26,8 +27,12 @@ func (h *Handler) handleRationBridgeFunding(w http.ResponseWriter, r *http.Reque
 	}
 
 	var body rationBridgeFundingRequestJSON
-	if err := decodeJSONBody(r, &body); err != nil {
-		writeBadRequest(w, h.log, err.Error())
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			writeRequestEntityTooLarge(w, h.log, err.Error())
+		} else {
+			writeBadRequest(w, h.log, err.Error())
+		}
 		return
 	}
 	if body.RequestedMinorUnits <= 0 {

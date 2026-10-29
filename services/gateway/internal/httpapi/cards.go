@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 
 	gatewaypb "github.com/caelum0x/ration/pkg/pb/gateway"
@@ -49,8 +50,12 @@ type issueCardRequestJSON struct {
 // handleIssueCard serves POST /v1/cards.
 func (h *Handler) handleIssueCard(w http.ResponseWriter, r *http.Request) {
 	var body issueCardRequestJSON
-	if err := decodeJSONBody(r, &body); err != nil {
-		writeBadRequest(w, h.log, err.Error())
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			writeRequestEntityTooLarge(w, h.log, err.Error())
+		} else {
+			writeBadRequest(w, h.log, err.Error())
+		}
 		return
 	}
 	if body.TenantID == "" {
@@ -134,8 +139,12 @@ func (h *Handler) handleAdjustCardLimit(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var body adjustCardLimitRequestJSON
-	if err := decodeJSONBody(r, &body); err != nil {
-		writeBadRequest(w, h.log, err.Error())
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			writeRequestEntityTooLarge(w, h.log, err.Error())
+		} else {
+			writeBadRequest(w, h.log, err.Error())
+		}
 		return
 	}
 	if body.NewLimitMinorUnits <= 0 {
