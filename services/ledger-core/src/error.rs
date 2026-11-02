@@ -37,6 +37,16 @@ pub enum LedgerError {
 
     #[error("idempotency_key is required")]
     IdempotencyKeyRequired,
+
+    #[error(
+        "idempotency_key {idempotency_key:?} was already used by tenant {existing_tenant_id} \
+         and cannot be replayed for a different tenant {requested_tenant_id}"
+    )]
+    IdempotencyKeyTenantMismatch {
+        idempotency_key: String,
+        existing_tenant_id: String,
+        requested_tenant_id: String,
+    },
 }
 
 impl From<rusqlite::Error> for LedgerError {
@@ -65,6 +75,10 @@ impl From<LedgerError> for tonic::Status {
             LedgerError::Money(_)
             | LedgerError::InvalidArgument(_)
             | LedgerError::IdempotencyKeyRequired => tonic::Status::invalid_argument(e.to_string()),
+
+            LedgerError::IdempotencyKeyTenantMismatch { .. } => {
+                tonic::Status::already_exists(e.to_string())
+            }
 
             LedgerError::Storage(_) | LedgerError::Wal(_) => tonic::Status::internal(e.to_string()),
         }

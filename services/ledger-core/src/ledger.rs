@@ -612,6 +612,29 @@ impl Ledger {
         if let Some(existing) =
             find_entry_by_idempotency_key(&inner.db, &idempotency_key, crypto.as_ref())?
         {
+            // `idempotency_key` is UNIQUE across the whole ledger_entries
+            // table (every tenant shares one key space, by schema), not
+            // scoped to (tenant_id, idempotency_key) — every real caller
+            // today derives it from a CSPRNG/UUIDv4-backed id
+            // (idgen.New, Uuid::new_v4) so a genuine cross-tenant
+            // collision never actually happens in practice, but this
+            // lookup has nothing stopping a caller from supplying a key
+            // some OTHER tenant already used. Without this check, that
+            // request would silently succeed: it returns Applied with
+            // the OTHER tenant's entry (wrong reference/memo/amount
+            // leaked to this caller) and THIS tenant's own current
+            // balance (unchanged, since nothing was actually written for
+            // this tenant) — reporting success for a write that never
+            // happened, with no error anywhere. Fail loudly instead:
+            // idempotency replay is only valid within the same tenant
+            // that originally used the key.
+            if existing.tenant_id != tenant_id {
+                return Err(LedgerError::IdempotencyKeyTenantMismatch {
+                    idempotency_key,
+                    existing_tenant_id: existing.tenant_id,
+                    requested_tenant_id: tenant_id,
+                });
+            }
             let balance = read_balance(&inner.db, &tenant_id)?;
             return Ok(ApplyOutcome::Applied {
                 entry: existing,
