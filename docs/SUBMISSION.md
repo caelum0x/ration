@@ -186,3 +186,44 @@ undersell real work:
 - A real ~68s demo video exists locally (`demo-video/`, gitignored —
   uploading it and the HackerEarth submission click-through are the
   two owner-only steps left).
+
+## Updates since previous update (rounds 6-37, through 2026-11-05)
+
+Also kept short — full per-round detail in `BUILD-LOG-2026-10-23.md` and
+`plans/airwallex-hackathon.md`. 32 more rounds landed after the section
+above, most of them real correctness/security gaps found by re-reading
+this exact codebase adversarially, not new features:
+
+- **The agent's money-moving tools are now tenant-pinned**: the LLM's
+  `adjust_card_limit` tool previously let a model redirect a limit change
+  to *any* tenant's card (round 34); the other three agent tools were
+  re-audited and confirmed to already hardcode the calling tenant. The
+  hard-rule envelope was never bypassable, but this closed the one tool
+  surface where a model's own tool-call arguments, not just its
+  reasoning, could move someone else's money.
+- **mTLS was silently a no-op in production mode**: every internal
+  service's dial to `auth` skipped client certs entirely (round 30) —
+  fixed so the production-hardening path documented in
+  `docs/THREAT-MODEL.md` actually does what it claims.
+- **Concurrency correctness on every money-moving path**: per-card and
+  per-tenant mutexes now serialize `AdjustCardLimit`/`CloseCard` (round
+  25a), `RationBridgeFunding` (round 25b), and deposit-webhook matching
+  (round 26) — each reproduced live first (two concurrent calls on the
+  same card/tenant permanently stranding real funds or double-matching a
+  deposit) before the fix.
+- **WAL/FFI crash-safety boundary hardened**: an apply failure after a
+  durable WAL append could misreport success as failure, risking a
+  resurrected entry on restart — now `process::abort()`s instead of
+  silently misclassifying (round 32), followed by a 298k-execution fuzz
+  pass (round 33) that found no further issue.
+- **Ledger idempotency closed a cross-tenant replay gap**: the
+  `idempotency_key` lookup in `apply_entry_checked` ignored `tenant_id`,
+  so a key collision across tenants could silently no-op a second
+  tenant's real entry as if it had already succeeded (round 36).
+- **This round (37)**: `suspendAfterFailure` — IssueCard's cleanup path
+  when a just-issued Airwallex card can't be backed by a ledger
+  hold — discarded its own `SetCardControls` error, leaving a real, live
+  Airwallex card at full limit with zero operator-visible signal (unlike
+  its sibling `revertCardControls`, which already logged loudly). Fixed
+  to log loudly with the card id; kept the repro as a permanent
+  regression test.
