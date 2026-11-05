@@ -414,11 +414,27 @@ func (s *Service) lockCard(cardID string) (unlock func()) {
 
 // suspendAfterFailure best-effort suspends an Airwallex card that was
 // just created but cannot be safely backed by a ledger hold. Errors here
-// are deliberately not surfaced to the caller: the primary error (the
-// reserve-floor failure) is what matters, and we must not mask it with a
-// cleanup failure, but we still want to try.
+// are deliberately not surfaced to the caller (RPC-wise): the primary
+// error (the reserve-floor/ledger failure) is what matters, and we must
+// not mask it with a cleanup failure.
+//
+// Reproduced live (see repro_suspend_bug_test.go): unlike
+// revertCardControls (AdjustCardLimit's mirror of this, reverting a card
+// back to a limit it already had), this is the ONLY place that will ever
+// try to zero out this specific card's limit — IssueCard returns before
+// ever adding the card to s.cards, so there is no persisted record of
+// this card anywhere in this service, nothing a reconciliation pass could
+// later retry. A failure here used to be discarded with a bare `_, _ =`,
+// so a transient Airwallex outage at exactly this moment left a real,
+// live Airwallex card at its full requested spend limit with zero ledger
+// backing and zero operator-visible signal that it had happened. Logged
+// loudly instead, same discipline as revertCardControls and persist()
+// above, so an operator can find and suspend the card by hand.
 func (s *Service) suspendAfterFailure(ctx context.Context, awCardID string) {
-	_, _ = s.airwallex.SetCardControls(ctx, awCardID, airwallex.CardControls{LimitMinorUnits: 0})
+	if _, err := s.airwallex.SetCardControls(ctx, awCardID, airwallex.CardControls{LimitMinorUnits: 0}); err != nil {
+		slog.Default().Error("cardsvc: failed to suspend airwallex card after reserve-floor/ledger failure — card may still be live at its full requested limit with no ledger backing and no record of it in this service",
+			"error", err, "airwallex_card_id", awCardID)
+	}
 }
 
 // revertCardControls is AdjustCardLimit's mirror of suspendAfterFailure:
